@@ -1,0 +1,46 @@
+{
+  "name": "pi-ask-user",
+  "version": "0.1.1",
+  "description": "Interactive ask_user tool for pi-coding-agent with multi-select and freeform input UI",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "extension",
+    "ask",
+    "ask_user",
+    "interactive"
+  ],
+  "author": "Enzo Lucchesi <enzo@edl.sh>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/edlsh/pi-ask-user.git"
+  },
+  "bugs": {
+    "url": "https://github.com/edlsh/pi-ask-user/issues"
+  },
+  "homepage": "https://github.com/edlsh/pi-ask-user#readme",
+  "publishConfig": {
+    "access": "public"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "files": [
+    "index.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "check": "npm pack --dry-run"
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-tui": "*",
+    "@sinclair/typebox": "*"
+  }
+}
