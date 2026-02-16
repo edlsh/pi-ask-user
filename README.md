@@ -2,6 +2,12 @@
 
 A Pi package that adds an interactive `ask_user` tool for collecting user decisions during an agent run.
 
+## Demo
+
+![ask_user demo](./media/ask-user-demo.gif)
+
+High-quality video: [ask-user-demo.mp4](./media/ask-user-demo.mp4)
+
 ## Features
 
 - Single-select option lists
@@ -27,12 +33,6 @@ The skill follows a "decision handshake" flow:
 4. Confirm the decision, then proceed
 
 See: `skills/ask-user/references/ask-user-skill-extension-spec.md`.
-
-## Demo
-
-![ask_user demo](./media/ask-user-demo.gif)
-
-High-quality video: [ask-user-demo.mp4](./media/ask-user-demo.mp4)
 
 ## Install
 
@@ -60,4 +60,3 @@ The registered tool name is:
   "allowFreeform": true
 }
 ```
-
