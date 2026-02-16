@@ -12,37 +12,7 @@ This spec optimizes for:
 
 ---
 
-## 1) 2026 Pattern Alignment
-
-This design intentionally follows three emerging patterns used by modern agent systems.
-
-### A. Progressive Disclosure
-
-The skill uses layered loading:
-
-1. **Metadata layer** (`name`, `description`) always in prompt.
-2. **Core protocol layer** (`SKILL.md`) loaded only when relevant.
-3. **Detailed reference layer** (`references/*.md`) loaded only when needed.
-
-Implication: keep `SKILL.md` concise and decision-focused; move large examples and policy details into references.
-
-### B. Agent Protocol Handshakes
-
-High-impact actions require a handshake:
-
-`detect boundary -> summarize evidence -> ask -> explicit user choice -> commit -> execute`
-
-The handshake prevents implicit assumptions from silently becoming implementation decisions.
-
-### C. Context-Aware Loading
-
-Questions must be formed from current evidence (repo state, docs, logs, external research), not from generic prompts.
-
-The `context` field in `ask_user` is the transport for this condensed evidence.
-
----
-
-## 2) System Model
+## 1) System Model
 
 ### Components
 
@@ -67,7 +37,7 @@ The `context` field in `ask_user` is the transport for this condensed evidence.
 
 ---
 
-## 3) Trigger Matrix (When to Call `ask_user`)
+## 2) Trigger Matrix (When to Call `ask_user`)
 
 | Scenario | Must Ask? | Why |
 |---|---:|---|
@@ -82,7 +52,7 @@ The `context` field in `ask_user` is the transport for this condensed evidence.
 
 ---
 
-## 4) Handshake State Machine
+## 3) Handshake State Machine
 
 ```text
 DISCOVER -> CLASSIFY -> (CLEAR -> EXECUTE)
@@ -112,7 +82,7 @@ After attempt 2:
 
 ---
 
-## 5) `ask_user` Payload Design Standard
+## 4) `ask_user` Payload Design Standard
 
 ### Field mapping
 
@@ -133,7 +103,7 @@ After attempt 2:
 
 ---
 
-## 6) UX Guidance for Best Outcomes
+## 5) UX Guidance for Best Outcomes
 
 ### Good interaction shape
 
@@ -158,7 +128,7 @@ After attempt 2:
 
 ---
 
-## 7) Runtime and Fallback Semantics
+## 6) Runtime and Fallback Semantics
 
 The extension already provides these behavior guarantees:
 
@@ -177,7 +147,7 @@ Design implication:
 
 ---
 
-## 8) Quality Rubric
+## 7) Quality Rubric
 
 A decision-gated interaction is successful when all are true:
 
@@ -195,7 +165,7 @@ Failure signals:
 
 ---
 
-## 9) Example Protocol Templates
+## 8) Example Protocol Templates
 
 ### Template: architecture fork
 
@@ -230,21 +200,3 @@ Failure signals:
 
 ---
 
-## 10) Packaging + Distribution Notes
-
-To ship this skill with the extension package:
-
-- include `skills/` in npm package files
-- register skills in `package.json` under `pi.skills`
-
-This ensures the skill is discoverable at startup and available for implicit invocation.
-
----
-
-## 11) Future Enhancements (Optional)
-
-- **Decision memory log**: append chosen options to a lightweight session decision ledger.
-- **Adaptive option generation**: tailor options by repo language/framework context.
-- **Confidence thresholding**: auto-trigger ask gate when model confidence in requirements is low.
-
-These are optional and not required for initial rollout.
