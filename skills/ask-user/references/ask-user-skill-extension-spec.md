@@ -2,42 +2,13 @@
 
 ## Purpose
 
-Define how the `ask-user` skill (prompt-time behavior) and the `ask_user` extension tool (runtime UI) cooperate to create reliable human-in-the-loop decisions.
+This document defines a minimal decision-gating protocol for using the `ask-user` skill with the `ask_user` tool.
 
-This spec optimizes for:
-- explicit user control at decision boundaries
-- low-friction interactive UX
-- minimal context bloat (progressive disclosure)
-- deterministic behavior across high-stakes workflows
+Goal: require explicit user decisions at high-impact or ambiguous boundaries before implementation continues.
 
 ---
 
-## 1) System Model
-
-### Components
-
-1. **Skill layer (`skills/ask-user/SKILL.md`)**
-   - decides *when* user interaction is mandatory
-   - enforces handshake behavior
-
-2. **Extension layer (`index.ts`, tool `ask_user`)**
-   - renders question UX (single-select, multi-select, freeform)
-   - returns normalized answer text to the agent
-
-3. **Model runtime**
-   - interprets skill guidance
-   - calls `ask_user` with structured payload
-   - resumes execution after explicit user response
-
-### Contract boundary
-
-- Skill controls policy and decision gating.
-- Extension controls interaction mechanics.
-- Model must not bypass skill policy for high-stakes/ambiguous decisions.
-
----
-
-## 2) Trigger Matrix (When to Call `ask_user`)
+## 1) Trigger Matrix (When to Call `ask_user`)
 
 | Scenario | Must Ask? | Why |
 |---|---:|---|
@@ -52,122 +23,35 @@ This spec optimizes for:
 
 ---
 
-## 3) Handshake State Machine
+## 2) Decision Handshake
 
-```text
-DISCOVER -> CLASSIFY -> (CLEAR -> EXECUTE)
-                     -> (AMBIGUOUS/HIGH_STAKES -> EVIDENCE -> ASK -> WAIT -> COMMIT -> EXECUTE)
-```
+Use this protocol whenever the trigger matrix says to ask.
 
-### State definitions
+1. **Detect boundary**
+   - classify as `high_stakes`, `ambiguous`, `both`, or `clear`
+2. **Gather evidence**
+   - read code/docs/logs first; do not ask blindly
+3. **Summarize context**
+   - prepare concise trade-off context (3–7 bullets or short paragraph)
+4. **Ask one focused question**
+   - call `ask_user` for one decision at a time
+5. **Commit and proceed**
+   - restate chosen option and implement accordingly
 
-- **DISCOVER**: inspect task and current project state.
-- **CLASSIFY**: decide whether decision gate is required.
-- **EVIDENCE**: gather and compress decision context.
-- **ASK**: invoke `ask_user` with a single focused decision.
-- **WAIT**: pause implementation until response arrives.
-- **COMMIT**: restate chosen option and intended next action.
-- **EXECUTE**: implement according to confirmed decision.
+### Retry/cancel policy
 
-### Cancellation behavior
-
-If user cancels or response is unclear:
-- enforce a **max two-attempt budget** for the same decision boundary
-- attempt 1: normal structured question
-- attempt 2: narrower question with explicit recommendation + `Proceed with recommendation / Choose another / Stop`
-
-After attempt 2:
-- for `high_stakes` or `both`: do not continue; report blocked status
-- for `ambiguous` only: proceed only when user delegates choice (e.g., "your call"), using the most reversible default and explicit assumptions
+- Max **2** `ask_user` attempts for the same decision boundary.
+- Attempt 1: normal structured question.
+- Attempt 2: narrower question with recommendation and explicit options.
+- After attempt 2:
+  - `high_stakes` / `both`: stop and report blocked.
+  - `ambiguous` only: proceed only if user delegates (e.g., “your call”), using the most reversible default.
 
 ---
 
-## 4) `ask_user` Payload Design Standard
+## 3) Example Payloads
 
-### Field mapping
-
-| Field | Required | Rule |
-|---|---:|---|
-| `question` | Yes | One decision only, concrete and action-bound |
-| `context` | Recommended | 3-7 bullets or short paragraph with evidence and trade-offs |
-| `options` | Optional | Prefer 2-5 choices when stable alternatives exist |
-| `allowMultiple` | Optional | `true` only for independent selections |
-| `allowFreeform` | Optional | Usually `true`; set `false` only when strict menu required |
-
-### Style rules
-
-- Keep options concise, decision-oriented, and contrastive.
-- Include brief descriptions for non-obvious trade-offs.
-- Avoid stacking unrelated questions.
-- Ask after evidence gathering, not before.
-
----
-
-## 5) UX Guidance for Best Outcomes
-
-### Good interaction shape
-
-1. Agent summarizes known constraints.
-2. Agent asks one clear question.
-3. User selects an option quickly (or writes freeform).
-4. Agent confirms and proceeds.
-
-### Avoid
-
-- long speculative context dumps
-- “What do you want?” without options
-- repeated confirmation of unchanged decisions
-- more than two attempts for the same decision boundary
-- hidden assumptions after user response
-
-### Recommended defaults
-
-- `allowFreeform: true`
-- `allowMultiple: false`
-- `options`: include concise titles + descriptions for trade-offs
-
----
-
-## 6) Runtime and Fallback Semantics
-
-The extension already provides these behavior guarantees:
-
-1. **Interactive mode with UI**
-   - single-select list, multi-select list, or freeform editor
-
-2. **No options provided**
-   - freeform input prompt is used
-
-3. **No interactive UI available**
-   - tool returns an error-style textual fallback that includes question/context/options
-
-Design implication:
-- skill should prefer structured options when ambiguity is high
-- but always permit freeform for unanticipated requirements
-
----
-
-## 7) Quality Rubric
-
-A decision-gated interaction is successful when all are true:
-
-- [ ] High-stakes or ambiguous boundary was detected
-- [ ] Context was gathered before asking
-- [ ] At most two decision questions were asked for the same boundary (normally one)
-- [ ] User response was explicit
-- [ ] Agent restated decision before execution
-- [ ] Implementation followed the selected path
-
-Failure signals:
-- agent made architectural choice without user decision
-- question lacked trade-off context
-- user answer ignored or overwritten
-
----
-
-## 8) Example Protocol Templates
-
-### Template: architecture fork
+### Architecture decision
 
 ```json
 {
@@ -182,7 +66,7 @@ Failure signals:
 }
 ```
 
-### Template: ambiguity cleanup
+### Requirement-priority decision
 
 ```json
 {
@@ -197,6 +81,3 @@ Failure signals:
   "allowFreeform": true
 }
 ```
-
----
-
