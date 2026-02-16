@@ -1,6 +1,6 @@
 {
   "name": "pi-ask-user",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Interactive ask_user tool for pi-coding-agent with multi-select and freeform input UI",
   "type": "module",
   "keywords": [
