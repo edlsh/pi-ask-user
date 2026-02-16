@@ -1,6 +1,6 @@
 {
   "name": "pi-ask-user",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Interactive ask_user tool for pi-coding-agent with multi-select and freeform input UI",
   "type": "module",
   "keywords": [
@@ -28,10 +28,14 @@
   "pi": {
     "extensions": [
       "./index.ts"
+    ],
+    "skills": [
+      "./skills"
     ]
   },
   "files": [
     "index.ts",
+    "skills",
     "README.md",
     "LICENSE"
   ],
