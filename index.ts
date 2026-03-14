@@ -37,6 +37,16 @@ interface AskParams {
 	options?: AskOptionInput[];
 	allowMultiple?: boolean;
 	allowFreeform?: boolean;
+	timeout?: number;
+}
+
+interface AskToolDetails {
+	question: string;
+	context?: string;
+	options: QuestionOption[];
+	answer: string | null;
+	cancelled: boolean;
+	wasCustom?: boolean;
 }
 
 function normalizeOptions(options: AskOptionInput[]): QuestionOption[] {
@@ -534,6 +544,12 @@ export default function (pi: ExtensionAPI) {
 		label: "Ask User",
 		description:
 			"Ask the user a question with optional multiple-choice answers. Use this to gather information interactively. Before calling, gather context with tools (read/exa/ref) and pass a short summary via the context field.",
+		promptSnippet:
+			"Ask the user a question with optional multiple-choice answers to gather information interactively",
+		promptGuidelines: [
+			"Before calling ask_user, gather context with tools (read/exa/ref) and pass a short summary via the context field.",
+			"Use ask_user when the user's intent is ambiguous, when a decision requires explicit user input, or when multiple valid options exist.",
+		],
 		parameters: Type.Object({
 			question: Type.String({ description: "The question to ask the user" }),
 			context: Type.Optional(
@@ -561,11 +577,17 @@ export default function (pi: ExtensionAPI) {
 			allowFreeform: Type.Optional(
 				Type.Boolean({ description: "Add a freeform text option. Default: true" }),
 			),
+			timeout: Type.Optional(
+				Type.Number({ description: "Auto-dismiss after N milliseconds (applies to fallback input mode when no options are provided)" }),
+			),
 		}),
 
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			if (signal?.aborted) {
-				return { content: [{ type: "text", text: "Cancelled" }] };
+				return {
+					content: [{ type: "text", text: "Cancelled" }],
+					details: { question: params.question, options: [], answer: null, cancelled: true } as AskToolDetails,
+				};
 			}
 
 			const {
@@ -574,6 +596,7 @@ export default function (pi: ExtensionAPI) {
 				options: rawOptions = [],
 				allowMultiple = false,
 				allowFreeform = true,
+				timeout,
 			} = params as AskParams;
 			const options = normalizeOptions(rawOptions);
 			const normalizedContext = context?.trim() || undefined;
@@ -590,36 +613,45 @@ export default function (pi: ExtensionAPI) {
 						},
 					],
 					isError: true,
-					details: { question, context: normalizedContext, options },
+					details: { question, context: normalizedContext, options, answer: null, cancelled: true } as AskToolDetails,
 				};
 			}
 
 			// If no options provided, fall back to freeform input prompt.
 			if (options.length === 0) {
 				const prompt = normalizedContext ? `${question}\n\nContext:\n${normalizedContext}` : question;
-				const answer = await ctx.ui.input(prompt, "Type your answer...");
+				const answer = await ctx.ui.input(prompt, "Type your answer...", timeout ? { timeout } : undefined);
 
 				if (!answer) {
-					return { content: [{ type: "text", text: "User cancelled the question" }] };
+					return {
+						content: [{ type: "text", text: "User cancelled the question" }],
+						details: { question, context: normalizedContext, options, answer: null, cancelled: true } as AskToolDetails,
+					};
 				}
 
-				return { content: [{ type: "text", text: `User answered: ${answer}` }] };
+				return {
+					content: [{ type: "text", text: `User answered: ${answer}` }],
+					details: { question, context: normalizedContext, options, answer, cancelled: false, wasCustom: true } as AskToolDetails,
+				};
 			}
 
 			let result: string | null;
 			try {
-				result = await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
-					return new AskComponent(
-						question,
-						normalizedContext,
-						options,
-						allowMultiple,
-						allowFreeform,
-						tui,
-						theme,
-						done,
-					);
-				});
+				result = await ctx.ui.custom<string | null>(
+					(tui, theme, _kb, done) => {
+						return new AskComponent(
+							question,
+							normalizedContext,
+							options,
+							allowMultiple,
+							allowFreeform,
+							tui,
+							theme,
+							done,
+						);
+					},
+					{ overlay: true },
+				);
 			} catch (error) {
 				const message =
 					error instanceof Error ? `${error.message}\n${error.stack ?? ""}` : String(error);
@@ -631,10 +663,56 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			if (result === null) {
-				return { content: [{ type: "text", text: "User cancelled the question" }] };
+				return {
+					content: [{ type: "text", text: "User cancelled the question" }],
+					details: { question, context: normalizedContext, options, answer: null, cancelled: true } as AskToolDetails,
+				};
 			}
 
-			return { content: [{ type: "text", text: `User answered: ${result}` }] };
+			return {
+				content: [{ type: "text", text: `User answered: ${result}` }],
+				details: { question, context: normalizedContext, options, answer: result, cancelled: false } as AskToolDetails,
+			};
+		},
+
+		renderCall(args, theme) {
+			const question = (args.question as string) || "";
+			const rawOptions = Array.isArray(args.options) ? args.options : [];
+			let text = theme.fg("toolTitle", theme.bold("ask_user "));
+			text += theme.fg("muted", question);
+			if (rawOptions.length > 0) {
+				const labels = rawOptions.map((o: unknown) =>
+					typeof o === "string" ? o : (o as QuestionOption)?.title ?? "",
+				);
+				text += "\n" + theme.fg("dim", `  ${rawOptions.length} option(s): ${labels.join(", ")}`);
+			}
+			if (args.allowMultiple) {
+				text += theme.fg("dim", " [multi-select]");
+			}
+			return new Text(text, 0, 0);
+		},
+
+		renderResult(result, _options, theme) {
+			const details = result.details as (AskToolDetails & { error?: string }) | undefined;
+
+			// Error state
+			if (details?.error) {
+				return new Text(theme.fg("error", `✗ ${details.error}`), 0, 0);
+			}
+
+			// Cancelled / no details
+			if (!details || details.cancelled) {
+				return new Text(theme.fg("warning", "Cancelled"), 0, 0);
+			}
+
+			// Success
+			const answer = details.answer ?? "";
+			let text = theme.fg("success", "✓ ");
+			if (details.wasCustom) {
+				text += theme.fg("muted", "(wrote) ");
+			}
+			text += theme.fg("accent", answer);
+			return new Text(text, 0, 0);
 		},
 	});
 }
