@@ -852,7 +852,14 @@ export default function (pi: ExtensionAPI) {
 							done,
 						);
 					},
-					{ overlay: true },
+					{
+						overlay: true,
+						overlayOptions: {
+							maxHeight: "80%",
+							width: normalizedContext ? "90%" : "70%",
+							minWidth: 50,
+						},
+					},
 				);
 			} catch (error) {
 				const message =
