@@ -14,6 +14,7 @@ import {
 	Editor,
 	type EditorTheme,
 	Key,
+	getKeybindings,
 	Markdown,
 	matchesKey,
 	Spacer,
@@ -118,7 +119,9 @@ class SingleSelectList implements Component {
 	}
 
 	handleInput(data: string): void {
-		if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c"))) {
+		const kb = getKeybindings();
+
+		if (kb.matches(data, "tui.select.cancel")) {
 			this.onCancel?.();
 			return;
 		}
@@ -129,19 +132,19 @@ class SingleSelectList implements Component {
 			return;
 		}
 
-		if (matchesKey(data, Key.up) || matchesKey(data, Key.shift("tab"))) {
+		if (kb.matches(data, "tui.select.up")) {
 			this.selectedIndex = this.selectedIndex === 0 ? count - 1 : this.selectedIndex - 1;
 			this.invalidate();
 			return;
 		}
 
-		if (matchesKey(data, Key.down) || matchesKey(data, Key.tab)) {
+		if (kb.matches(data, "tui.select.down")) {
 			this.selectedIndex = this.selectedIndex === count - 1 ? 0 : this.selectedIndex + 1;
 			this.invalidate();
 			return;
 		}
 
-		// Number keys (1-9) jump to and select items
+		// Number keys (1-9) jump to items
 		const numMatch = data.match(/^[1-9]$/);
 		if (numMatch) {
 			const idx = Number.parseInt(numMatch[0], 10) - 1;
@@ -152,7 +155,7 @@ class SingleSelectList implements Component {
 			return;
 		}
 
-		if (matchesKey(data, Key.enter) || matchesKey(data, Key.space)) {
+		if (kb.matches(data, "tui.select.confirm")) {
 			if (this.isFreeformRow(this.selectedIndex)) {
 				this.onEnterFreeform?.();
 				return;
@@ -163,6 +166,50 @@ class SingleSelectList implements Component {
 		}
 	}
 
+	private renderItem(i: number, width: number): string[] {
+		const theme = this.theme;
+		const isSelected = i === this.selectedIndex;
+		const prefix = isSelected ? theme.fg("accent", "→") : " ";
+		const itemLines: string[] = [];
+
+		if (this.isFreeformRow(i)) {
+			const label = theme.fg("text", theme.bold("Type something."));
+			const desc = theme.fg("muted", "Enter a custom response");
+			itemLines.push(truncateToWidth(`${prefix}   ${label} ${theme.fg("dim", "—")} ${desc}`, width, ""));
+			return itemLines;
+		}
+
+		const option = this.options[i];
+		if (!option) return itemLines;
+
+		const num = theme.fg("dim", `${i + 1}.`);
+		const titleIndent = "      ";
+		const titleWrapWidth = Math.max(10, width - titleIndent.length);
+		const wrappedTitle = wrapTextWithAnsi(option.title, titleWrapWidth);
+
+		for (let j = 0; j < wrappedTitle.length; j++) {
+			const titleLine = isSelected
+				? theme.fg("accent", theme.bold(wrappedTitle[j]))
+				: theme.fg("text", theme.bold(wrappedTitle[j]));
+			if (j === 0) {
+				itemLines.push(truncateToWidth(`${prefix} ${num} ${titleLine}`, width, ""));
+			} else {
+				itemLines.push(truncateToWidth(`${titleIndent}${titleLine}`, width, ""));
+			}
+		}
+
+		if (option.description) {
+			const descIndent = "      ";
+			const descWrapWidth = Math.max(10, width - descIndent.length);
+			const wrappedDesc = wrapTextWithAnsi(option.description, descWrapWidth);
+			for (const w of wrappedDesc) {
+				itemLines.push(truncateToWidth(descIndent + theme.fg("muted", w), width, ""));
+			}
+		}
+
+		return itemLines;
+	}
+
 	render(width: number): string[] {
 		if (this.cachedLines && this.cachedWidth === width) {
 			return this.cachedLines;
@@ -170,7 +217,7 @@ class SingleSelectList implements Component {
 
 		const theme = this.theme;
 		const count = this.getItemCount();
-		const maxVisible = Math.min(count, 10);
+		const MAX_LINES = 20;
 
 		if (count === 0) {
 			this.cachedLines = [theme.fg("warning", "No options")];
@@ -178,55 +225,46 @@ class SingleSelectList implements Component {
 			return this.cachedLines;
 		}
 
-		const startIndex = Math.max(0, Math.min(this.selectedIndex - Math.floor(maxVisible / 2), count - maxVisible));
-		const endIndex = Math.min(startIndex + maxVisible, count);
+		// Expand outward from selectedIndex, bounded by rendered line count
+		const itemLineCache = new Map<number, string[]>();
+		let startIndex = this.selectedIndex;
+		let endIndex = this.selectedIndex;
 
-		const lines: string[] = [];
+		const selectedLines = this.renderItem(this.selectedIndex, width);
+		itemLineCache.set(this.selectedIndex, selectedLines);
+		let totalLines = selectedLines.length;
 
-		for (let i = startIndex; i < endIndex; i++) {
-			const isSelected = i === this.selectedIndex;
-			const prefix = isSelected ? theme.fg("accent", "→") : " ";
-
-			if (this.isFreeformRow(i)) {
-				const label = theme.fg("text", theme.bold("Type something."));
-				const desc = theme.fg("muted", "Enter a custom response");
-				const line = `${prefix}   ${label} ${theme.fg("dim", "—")} ${desc}`;
-				lines.push(truncateToWidth(line, width, ""));
-				continue;
+		let lo = this.selectedIndex - 1;
+		let hi = this.selectedIndex + 1;
+		while (lo >= 0 || hi < count) {
+			if (hi < count) {
+				const below = this.renderItem(hi, width);
+				if (totalLines + below.length <= MAX_LINES) {
+					itemLineCache.set(hi, below);
+					totalLines += below.length;
+					endIndex = hi;
+					hi++;
+				} else { hi = count; }
 			}
-
-			const option = this.options[i];
-			if (!option) continue;
-
-			const num = theme.fg("dim", `${i + 1}.`);
-			const titleIndent = "      ";
-			const titleWrapWidth = Math.max(10, width - titleIndent.length);
-			const wrappedTitle = wrapTextWithAnsi(option.title, titleWrapWidth);
-
-			for (let j = 0; j < wrappedTitle.length; j++) {
-				const titleLine = isSelected
-					? theme.fg("accent", theme.bold(wrappedTitle[j]))
-					: theme.fg("text", theme.bold(wrappedTitle[j]));
-
-				if (j === 0) {
-					lines.push(truncateToWidth(`${prefix} ${num} ${titleLine}`, width, ""));
-				} else {
-					lines.push(truncateToWidth(`${titleIndent}${titleLine}`, width, ""));
-				}
+			if (lo >= 0) {
+				const above = this.renderItem(lo, width);
+				if (totalLines + above.length <= MAX_LINES) {
+					itemLineCache.set(lo, above);
+					totalLines += above.length;
+					startIndex = lo;
+					lo--;
+				} else { lo = -1; }
 			}
-
-			if (option.description) {
-				const descIndent = "      ";
-				const descWrapWidth = Math.max(10, width - descIndent.length);
-				const wrappedDesc = wrapTextWithAnsi(option.description, descWrapWidth);
-				for (const w of wrappedDesc) {
-					lines.push(truncateToWidth(descIndent + theme.fg("muted", w), width, ""));
-				}
-			}
+			if (lo < 0 && hi >= count) break;
 		}
 
-		// Scroll indicator
-		if (startIndex > 0 || endIndex < count) {
+		const lines: string[] = [];
+		for (let i = startIndex; i <= endIndex; i++) {
+			const cached = itemLineCache.get(i);
+			if (cached) lines.push(...cached);
+		}
+
+		if (startIndex > 0 || endIndex < count - 1) {
 			lines.push(theme.fg("dim", truncateToWidth(`  (${this.selectedIndex + 1}/${count})`, width, "")));
 		}
 
@@ -340,6 +378,51 @@ class MultiSelectList implements Component {
 		}
 	}
 
+	private renderItem(i: number, width: number): string[] {
+		const theme = this.theme;
+		const isSelected = i === this.selectedIndex;
+		const prefix = isSelected ? theme.fg("accent", "→") : " ";
+		const itemLines: string[] = [];
+
+		if (this.isFreeformRow(i)) {
+			const label = theme.fg("text", theme.bold("Type something."));
+			const desc = theme.fg("muted", "Enter a custom response");
+			itemLines.push(truncateToWidth(`${prefix}   ${label} ${theme.fg("dim", "—")} ${desc}`, width, ""));
+			return itemLines;
+		}
+
+		const option = this.options[i];
+		if (!option) return itemLines;
+
+		const checkbox = this.checked.has(i) ? theme.fg("success", "[✓]") : theme.fg("dim", "[ ]");
+		const num = theme.fg("dim", `${i + 1}.`);
+		const titleIndent = "          ";
+		const titleWrapWidth = Math.max(10, width - titleIndent.length);
+		const wrappedTitle = wrapTextWithAnsi(option.title, titleWrapWidth);
+
+		for (let j = 0; j < wrappedTitle.length; j++) {
+			const titleLine = isSelected
+				? theme.fg("accent", theme.bold(wrappedTitle[j]))
+				: theme.fg("text", theme.bold(wrappedTitle[j]));
+			if (j === 0) {
+				itemLines.push(truncateToWidth(`${prefix} ${num} ${checkbox} ${titleLine}`, width, ""));
+			} else {
+				itemLines.push(truncateToWidth(`${titleIndent}${titleLine}`, width, ""));
+			}
+		}
+
+		if (option.description) {
+			const descIndent = "          ";
+			const descWrapWidth = Math.max(10, width - descIndent.length);
+			const wrappedDesc = wrapTextWithAnsi(option.description, descWrapWidth);
+			for (const w of wrappedDesc) {
+				itemLines.push(truncateToWidth(descIndent + theme.fg("muted", w), width, ""));
+			}
+		}
+
+		return itemLines;
+	}
+
 	render(width: number): string[] {
 		if (this.cachedLines && this.cachedWidth === width) {
 			return this.cachedLines;
@@ -347,7 +430,7 @@ class MultiSelectList implements Component {
 
 		const theme = this.theme;
 		const count = this.getItemCount();
-		const maxVisible = Math.min(count, 10);
+		const MAX_LINES = 20;
 
 		if (count === 0) {
 			this.cachedLines = [theme.fg("warning", "No options")];
@@ -355,56 +438,46 @@ class MultiSelectList implements Component {
 			return this.cachedLines;
 		}
 
-		const startIndex = Math.max(0, Math.min(this.selectedIndex - Math.floor(maxVisible / 2), count - maxVisible));
-		const endIndex = Math.min(startIndex + maxVisible, count);
+		// Expand outward from selectedIndex, bounded by rendered line count
+		const itemLineCache = new Map<number, string[]>();
+		let startIndex = this.selectedIndex;
+		let endIndex = this.selectedIndex;
 
-		const lines: string[] = [];
+		const selectedLines = this.renderItem(this.selectedIndex, width);
+		itemLineCache.set(this.selectedIndex, selectedLines);
+		let totalLines = selectedLines.length;
 
-		for (let i = startIndex; i < endIndex; i++) {
-			const isSelected = i === this.selectedIndex;
-			const prefix = isSelected ? theme.fg("accent", "→") : " ";
-
-			if (this.isFreeformRow(i)) {
-				const label = theme.fg("text", theme.bold("Type something."));
-				const desc = theme.fg("muted", "Enter a custom response");
-				const line = `${prefix}   ${label} ${theme.fg("dim", "—")} ${desc}`;
-				lines.push(truncateToWidth(line, width, ""));
-				continue;
+		let lo = this.selectedIndex - 1;
+		let hi = this.selectedIndex + 1;
+		while (lo >= 0 || hi < count) {
+			if (hi < count) {
+				const below = this.renderItem(hi, width);
+				if (totalLines + below.length <= MAX_LINES) {
+					itemLineCache.set(hi, below);
+					totalLines += below.length;
+					endIndex = hi;
+					hi++;
+				} else { hi = count; }
 			}
-
-			const option = this.options[i];
-			if (!option) continue;
-
-			const checkbox = this.checked.has(i) ? theme.fg("success", "[✓]") : theme.fg("dim", "[ ]");
-			const num = theme.fg("dim", `${i + 1}.`);
-			const titleIndent = "          ";
-			const titleWrapWidth = Math.max(10, width - titleIndent.length);
-			const wrappedTitle = wrapTextWithAnsi(option.title, titleWrapWidth);
-
-			for (let j = 0; j < wrappedTitle.length; j++) {
-				const titleLine = isSelected
-					? theme.fg("accent", theme.bold(wrappedTitle[j]))
-					: theme.fg("text", theme.bold(wrappedTitle[j]));
-
-				if (j === 0) {
-					lines.push(truncateToWidth(`${prefix} ${num} ${checkbox} ${titleLine}`, width, ""));
-				} else {
-					lines.push(truncateToWidth(`${titleIndent}${titleLine}`, width, ""));
-				}
+			if (lo >= 0) {
+				const above = this.renderItem(lo, width);
+				if (totalLines + above.length <= MAX_LINES) {
+					itemLineCache.set(lo, above);
+					totalLines += above.length;
+					startIndex = lo;
+					lo--;
+				} else { lo = -1; }
 			}
-
-			if (option.description) {
-				const descIndent = "          ";
-				const descWrapWidth = Math.max(10, width - descIndent.length);
-				const wrappedDesc = wrapTextWithAnsi(option.description, descWrapWidth);
-				for (const w of wrappedDesc) {
-					lines.push(truncateToWidth(descIndent + theme.fg("muted", w), width, ""));
-				}
-			}
+			if (lo < 0 && hi >= count) break;
 		}
 
-		// Scroll indicator
-		if (startIndex > 0 || endIndex < count) {
+		const lines: string[] = [];
+		for (let i = startIndex; i <= endIndex; i++) {
+			const cached = itemLineCache.get(i);
+			if (cached) lines.push(...cached);
+		}
+
+		if (startIndex > 0 || endIndex < count - 1) {
 			lines.push(theme.fg("dim", truncateToWidth(`  (${this.selectedIndex + 1}/${count})`, width, "")));
 		}
 
