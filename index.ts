@@ -6,7 +6,7 @@
  */
 
 import type { ExtensionAPI, Theme } from "@mariozechner/pi-coding-agent";
-import { DynamicBorder } from "@mariozechner/pi-coding-agent";
+import { DynamicBorder, getMarkdownTheme } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import {
 	Container,
@@ -14,9 +14,8 @@ import {
 	Editor,
 	type EditorTheme,
 	Key,
+	Markdown,
 	matchesKey,
-	SelectList,
-	type SelectItem,
 	Spacer,
 	Text,
 	type TUI,
@@ -72,26 +71,170 @@ function formatOptionsForMessage(options: QuestionOption[]): string {
 		.join("\n");
 }
 
-const FREEFORM_VALUE = "__freeform__";
-
-function createSelectListTheme(theme: Theme) {
-	return {
-		selectedPrefix: (t: string) => theme.fg("accent", t),
-		selectedText: (t: string) => theme.fg("accent", t),
-		description: (t: string) => theme.fg("muted", t),
-		scrollInfo: (t: string) => theme.fg("dim", t),
-		noMatch: (t: string) => theme.fg("warning", t),
-	};
-}
-
 function createEditorTheme(theme: Theme): EditorTheme {
 	return {
 		borderColor: (s: string) => theme.fg("accent", s),
-		selectList: createSelectListTheme(theme),
+		selectList: {
+			selectedPrefix: (t: string) => theme.fg("accent", t),
+			selectedText: (t: string) => theme.fg("accent", t),
+			description: (t: string) => theme.fg("muted", t),
+			scrollInfo: (t: string) => theme.fg("dim", t),
+			noMatch: (t: string) => theme.fg("warning", t),
+		},
 	};
 }
 
 type AskMode = "select" | "freeform";
+
+class SingleSelectList implements Component {
+	private options: QuestionOption[];
+	private allowFreeform: boolean;
+	private theme: Theme;
+	private selectedIndex = 0;
+	private cachedWidth?: number;
+	private cachedLines?: string[];
+
+	public onCancel?: () => void;
+	public onSelect?: (option: QuestionOption) => void;
+	public onEnterFreeform?: () => void;
+
+	constructor(options: QuestionOption[], allowFreeform: boolean, theme: Theme) {
+		this.options = options;
+		this.allowFreeform = allowFreeform;
+		this.theme = theme;
+	}
+
+	invalidate(): void {
+		this.cachedWidth = undefined;
+		this.cachedLines = undefined;
+	}
+
+	private getItemCount(): number {
+		return this.options.length + (this.allowFreeform ? 1 : 0);
+	}
+
+	private isFreeformRow(index: number): boolean {
+		return this.allowFreeform && index === this.options.length;
+	}
+
+	handleInput(data: string): void {
+		if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c"))) {
+			this.onCancel?.();
+			return;
+		}
+
+		const count = this.getItemCount();
+		if (count === 0) {
+			this.onCancel?.();
+			return;
+		}
+
+		if (matchesKey(data, Key.up) || matchesKey(data, Key.shift("tab"))) {
+			this.selectedIndex = this.selectedIndex === 0 ? count - 1 : this.selectedIndex - 1;
+			this.invalidate();
+			return;
+		}
+
+		if (matchesKey(data, Key.down) || matchesKey(data, Key.tab)) {
+			this.selectedIndex = this.selectedIndex === count - 1 ? 0 : this.selectedIndex + 1;
+			this.invalidate();
+			return;
+		}
+
+		// Number keys (1-9) jump to and select items
+		const numMatch = data.match(/^[1-9]$/);
+		if (numMatch) {
+			const idx = Number.parseInt(numMatch[0], 10) - 1;
+			if (idx >= 0 && idx < this.options.length) {
+				this.selectedIndex = idx;
+				this.invalidate();
+			}
+			return;
+		}
+
+		if (matchesKey(data, Key.enter) || matchesKey(data, Key.space)) {
+			if (this.isFreeformRow(this.selectedIndex)) {
+				this.onEnterFreeform?.();
+				return;
+			}
+			const option = this.options[this.selectedIndex];
+			if (option) this.onSelect?.(option);
+			else this.onCancel?.();
+		}
+	}
+
+	render(width: number): string[] {
+		if (this.cachedLines && this.cachedWidth === width) {
+			return this.cachedLines;
+		}
+
+		const theme = this.theme;
+		const count = this.getItemCount();
+		const maxVisible = Math.min(count, 10);
+
+		if (count === 0) {
+			this.cachedLines = [theme.fg("warning", "No options")];
+			this.cachedWidth = width;
+			return this.cachedLines;
+		}
+
+		const startIndex = Math.max(0, Math.min(this.selectedIndex - Math.floor(maxVisible / 2), count - maxVisible));
+		const endIndex = Math.min(startIndex + maxVisible, count);
+
+		const lines: string[] = [];
+
+		for (let i = startIndex; i < endIndex; i++) {
+			const isSelected = i === this.selectedIndex;
+			const prefix = isSelected ? theme.fg("accent", "→") : " ";
+
+			if (this.isFreeformRow(i)) {
+				const label = theme.fg("text", theme.bold("Type something."));
+				const desc = theme.fg("muted", "Enter a custom response");
+				const line = `${prefix}   ${label} ${theme.fg("dim", "—")} ${desc}`;
+				lines.push(truncateToWidth(line, width, ""));
+				continue;
+			}
+
+			const option = this.options[i];
+			if (!option) continue;
+
+			const num = theme.fg("dim", `${i + 1}.`);
+			const titleIndent = "      ";
+			const titleWrapWidth = Math.max(10, width - titleIndent.length);
+			const wrappedTitle = wrapTextWithAnsi(option.title, titleWrapWidth);
+
+			for (let j = 0; j < wrappedTitle.length; j++) {
+				const titleLine = isSelected
+					? theme.fg("accent", theme.bold(wrappedTitle[j]))
+					: theme.fg("text", theme.bold(wrappedTitle[j]));
+
+				if (j === 0) {
+					lines.push(truncateToWidth(`${prefix} ${num} ${titleLine}`, width, ""));
+				} else {
+					lines.push(truncateToWidth(`${titleIndent}${titleLine}`, width, ""));
+				}
+			}
+
+			if (option.description) {
+				const descIndent = "      ";
+				const descWrapWidth = Math.max(10, width - descIndent.length);
+				const wrappedDesc = wrapTextWithAnsi(option.description, descWrapWidth);
+				for (const w of wrappedDesc) {
+					lines.push(truncateToWidth(descIndent + theme.fg("muted", w), width, ""));
+				}
+			}
+		}
+
+		// Scroll indicator
+		if (startIndex > 0 || endIndex < count) {
+			lines.push(theme.fg("dim", truncateToWidth(`  (${this.selectedIndex + 1}/${count})`, width, "")));
+		}
+
+		this.cachedWidth = width;
+		this.cachedLines = lines;
+		return lines;
+	}
+}
 
 class MultiSelectList implements Component {
 	private options: QuestionOption[];
@@ -234,19 +377,28 @@ class MultiSelectList implements Component {
 
 			const checkbox = this.checked.has(i) ? theme.fg("success", "[✓]") : theme.fg("dim", "[ ]");
 			const num = theme.fg("dim", `${i + 1}.`);
-			const title = isSelected
-				? theme.fg("accent", theme.bold(option.title))
-				: theme.fg("text", theme.bold(option.title));
+			const titleIndent = "          ";
+			const titleWrapWidth = Math.max(10, width - titleIndent.length);
+			const wrappedTitle = wrapTextWithAnsi(option.title, titleWrapWidth);
 
-			const firstLine = `${prefix} ${num} ${checkbox} ${title}`;
-			lines.push(truncateToWidth(firstLine, width, ""));
+			for (let j = 0; j < wrappedTitle.length; j++) {
+				const titleLine = isSelected
+					? theme.fg("accent", theme.bold(wrappedTitle[j]))
+					: theme.fg("text", theme.bold(wrappedTitle[j]));
+
+				if (j === 0) {
+					lines.push(truncateToWidth(`${prefix} ${num} ${checkbox} ${titleLine}`, width, ""));
+				} else {
+					lines.push(truncateToWidth(`${titleIndent}${titleLine}`, width, ""));
+				}
+			}
 
 			if (option.description) {
-				const indent = "      ";
-				const wrapWidth = Math.max(10, width - indent.length);
-				const wrapped = wrapTextWithAnsi(option.description, wrapWidth);
-				for (const w of wrapped) {
-					lines.push(truncateToWidth(indent + theme.fg("muted", w), width, ""));
+				const descIndent = "          ";
+				const descWrapWidth = Math.max(10, width - descIndent.length);
+				const wrappedDesc = wrapTextWithAnsi(option.description, descWrapWidth);
+				for (const w of wrappedDesc) {
+					lines.push(truncateToWidth(descIndent + theme.fg("muted", w), width, ""));
 				}
 			}
 		}
@@ -281,12 +433,13 @@ class AskComponent extends Container {
 	// Static layout components
 	private titleText: Text;
 	private questionText: Text;
-	private contextText?: Text;
+	private contextLabel?: Text;
+	private contextMarkdown?: Markdown;
 	private modeContainer: Container;
 	private helpText: Text;
 
 	// Mode components
-	private selectList?: SelectList;
+	private singleSelectList?: SingleSelectList;
 	private multiSelectList?: MultiSelectList;
 	private editor?: Editor;
 
@@ -337,8 +490,10 @@ class AskComponent extends Container {
 
 		if (this.context) {
 			this.addChild(new Spacer(1));
-			this.contextText = new Text("", 1, 0);
-			this.addChild(this.contextText);
+			this.contextLabel = new Text("", 1, 0);
+			this.addChild(this.contextLabel);
+			this.contextMarkdown = new Markdown("", 1, 0, getMarkdownTheme());
+			this.addChild(this.contextMarkdown);
 		}
 
 		this.addChild(new Spacer(1));
@@ -373,8 +528,9 @@ class AskComponent extends Container {
 		const theme = this.theme;
 		this.titleText.setText(theme.fg("accent", theme.bold("Question")));
 		this.questionText.setText(theme.fg("text", theme.bold(this.question)));
-		if (this.contextText && this.context) {
-			this.contextText.setText(`${theme.fg("accent", theme.bold("Context:"))}\n${theme.fg("dim", this.context)}`);
+		if (this.contextLabel && this.contextMarkdown && this.context) {
+			this.contextLabel.setText(theme.fg("accent", theme.bold("Context:")));
+			this.contextMarkdown.setText(this.context);
 		}
 	}
 
@@ -397,43 +553,16 @@ class AskComponent extends Container {
 		}
 	}
 
-	private buildSingleSelectItems(): SelectItem[] {
-		const items: SelectItem[] = this.options.map((o, idx) => ({
-			value: String(idx),
-			label: o.title,
-			description: o.description,
-		}));
+	private ensureSingleSelectList(): SingleSelectList {
+		if (this.singleSelectList) return this.singleSelectList;
 
-		if (this.allowFreeform) {
-			items.push({
-				value: FREEFORM_VALUE,
-				label: "Type something.",
-				description: "Enter a custom response",
-			});
-		}
+		const list = new SingleSelectList(this.options, this.allowFreeform, this.theme);
+		list.onSelect = (option) => this.onDone(option.title);
+		list.onCancel = () => this.onDone(null);
+		list.onEnterFreeform = () => this.showFreeformMode();
 
-		return items;
-	}
-
-	private ensureSingleSelectList(): SelectList {
-		if (this.selectList) return this.selectList;
-
-		const items = this.buildSingleSelectItems();
-		const selectList = new SelectList(items, Math.min(items.length, 10), createSelectListTheme(this.theme));
-
-		selectList.onSelect = (item) => {
-			if (item.value === FREEFORM_VALUE) {
-				this.showFreeformMode();
-				return;
-			}
-			const idx = Number.parseInt(item.value, 10);
-			const option = this.options[idx];
-			this.onDone(option?.title ?? null);
-		};
-		selectList.onCancel = () => this.onDone(null);
-
-		this.selectList = selectList;
-		return selectList;
+		this.singleSelectList = list;
+		return list;
 	}
 
 	private ensureMultiSelectList(): MultiSelectList {
