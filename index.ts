@@ -6,7 +6,7 @@
  */
 
 import type { ExtensionAPI, Theme } from "@mariozechner/pi-coding-agent";
-import { DynamicBorder } from "@mariozechner/pi-coding-agent";
+import { DynamicBorder, getMarkdownTheme, rawKeyHint } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import {
 	Container,
@@ -14,6 +14,8 @@ import {
 	Editor,
 	type EditorTheme,
 	Key,
+	Markdown,
+	type MarkdownTheme,
 	matchesKey,
 	Spacer,
 	Text,
@@ -71,8 +73,6 @@ function formatOptionsForMessage(options: QuestionOption[]): string {
 		.join("\n");
 }
 
-const FREEFORM_VALUE = "__freeform__";
-
 function createSelectListTheme(theme: Theme) {
 	return {
 		selectedPrefix: (t: string) => theme.fg("accent", t),
@@ -94,6 +94,7 @@ type AskMode = "select" | "freeform";
 
 const ASK_OVERLAY_MAX_HEIGHT_RATIO = 0.85;
 const ASK_OVERLAY_WIDTH = "92%";
+const ASK_OVERLAY_MIN_WIDTH = 40;
 
 class MultiSelectList implements Component {
 	private options: QuestionOption[];
@@ -412,7 +413,7 @@ class AskComponent extends Container {
 	// Static layout components
 	private titleText: Text;
 	private questionText: Text;
-	private contextText?: Text;
+	private contextComponent?: Component;
 	private modeContainer: Container;
 	private helpText: Text;
 
@@ -421,7 +422,7 @@ class AskComponent extends Container {
 	private multiSelectList?: MultiSelectList;
 	private editor?: Editor;
 
-	// Focus propagation for IME cursor positioning (Editor is Focusable)
+	// Focusable - propagate to Editor for IME cursor positioning
 	private _focused = false;
 	get focused(): boolean {
 		return this._focused;
@@ -429,8 +430,7 @@ class AskComponent extends Container {
 	set focused(value: boolean) {
 		this._focused = value;
 		if (this.editor && this.mode === "freeform") {
-			const anyEditor = this.editor as unknown as { focused?: boolean };
-			anyEditor.focused = value;
+			(this.editor as any).focused = value;
 		}
 	}
 
@@ -468,8 +468,16 @@ class AskComponent extends Container {
 
 		if (this.context) {
 			this.addChild(new Spacer(1));
-			this.contextText = new Text("", 1, 0);
-			this.addChild(this.contextText);
+			let mdTheme: MarkdownTheme | undefined;
+			try {
+				mdTheme = getMarkdownTheme();
+			} catch {}
+			if (mdTheme) {
+				this.contextComponent = new Markdown("", 1, 0, mdTheme);
+			} else {
+				this.contextComponent = new Text("", 1, 0);
+			}
+			this.addChild(this.contextComponent);
 		}
 
 		this.addChild(new Spacer(1));
@@ -525,27 +533,47 @@ class AskComponent extends Container {
 		const theme = this.theme;
 		this.titleText.setText(theme.fg("accent", theme.bold("Question")));
 		this.questionText.setText(theme.fg("text", theme.bold(this.question)));
-		if (this.contextText && this.context) {
-			this.contextText.setText(`${theme.fg("accent", theme.bold("Context:"))}\n${theme.fg("dim", this.context)}`);
+		if (this.contextComponent && this.context) {
+			if (this.contextComponent instanceof Markdown) {
+				(this.contextComponent as Markdown).setText(
+					`**Context:**\n${this.context}`,
+				);
+			} else {
+				(this.contextComponent as Text).setText(
+					`${theme.fg("accent", theme.bold("Context:"))}\n${theme.fg("dim", this.context)}`,
+				);
+			}
 		}
 	}
 
 	private updateHelpText(): void {
 		const theme = this.theme;
 		if (this.mode === "freeform") {
-			this.helpText.setText(
-				theme.fg(
-					"dim",
-					"enter submit • shift+enter newline • (ctrl+enter submit if supported) • esc back • ctrl+c cancel",
-				),
-			);
+			const hints = [
+				rawKeyHint("enter", "submit"),
+				rawKeyHint("shift+enter", "newline"),
+				rawKeyHint("esc", "back"),
+				rawKeyHint("ctrl+c", "cancel"),
+			].join(" • ");
+			this.helpText.setText(theme.fg("dim", hints));
 			return;
 		}
 
 		if (this.allowMultiple) {
-			this.helpText.setText(theme.fg("dim", "↑↓ navigate • space toggle • enter submit • esc cancel"));
+			const hints = [
+				rawKeyHint("↑↓", "navigate"),
+				rawKeyHint("space", "toggle"),
+				rawKeyHint("enter", "submit"),
+				rawKeyHint("esc", "cancel"),
+			].join(" • ");
+			this.helpText.setText(theme.fg("dim", hints));
 		} else {
-			this.helpText.setText(theme.fg("dim", "↑↓ navigate • enter select • esc cancel"));
+			const hints = [
+				rawKeyHint("↑↓", "navigate"),
+				rawKeyHint("enter", "select"),
+				rawKeyHint("esc", "cancel"),
+			].join(" • ");
+			this.helpText.setText(theme.fg("dim", hints));
 		}
 	}
 
@@ -575,11 +603,7 @@ class AskComponent extends Container {
 
 	private ensureEditor(): Editor {
 		if (this.editor) return this.editor;
-		// Note: pi's bundled pi-tui Editor expects (tui, theme, options?)
-		const editor = new Editor(this.tui, createEditorTheme(this.theme));
-		// Default Editor behavior: Enter submits, Shift+Enter inserts newline.
-		// Ctrl+Enter is only distinguishable in terminals with Kitty protocol mappings,
-		// so we support it as an *additional* submit shortcut in our wrapper.
+		const editor = new Editor(createEditorTheme(this.theme));
 		editor.disableSubmit = false;
 		editor.onSubmit = (text: string) => {
 			const trimmed = text.trim();
@@ -609,8 +633,7 @@ class AskComponent extends Container {
 		this.modeContainer.clear();
 
 		const editor = this.ensureEditor();
-		// Ensure focus is propagated immediately when switching modes.
-		(editor as unknown as { focused?: boolean }).focused = this._focused;
+		(editor as any).focused = this._focused;
 
 		this.modeContainer.addChild(new Text(this.theme.fg("accent", this.theme.bold("Custom response")), 1, 0));
 		this.modeContainer.addChild(new Spacer(1));
@@ -619,12 +642,6 @@ class AskComponent extends Container {
 		this.updateHelpText();
 		this.invalidate();
 		this.tui.requestRender();
-	}
-
-	private submitFreeform(): void {
-		const editor = this.ensureEditor();
-		const text = editor.getText().trim();
-		this.onDone(text ? text : null);
 	}
 
 	handleInput(data: string): void {
@@ -639,13 +656,13 @@ class AskComponent extends Container {
 				return;
 			}
 
-			// Submit on Ctrl+Enter (only works if terminal distinguishes it, e.g. Kitty protocol)
 			if (matchesKey(data, Key.ctrl("enter")) || matchesKey(data, "ctrl+enter")) {
-				this.submitFreeform();
+				const editor = this.ensureEditor();
+				const text = editor.getText().trim();
+				this.onDone(text ? text : null);
 				return;
 			}
 
-			// Let Editor handle everything else (Enter submits, Shift+Enter newline)
 			this.ensureEditor().handleInput(data);
 			this.tui.requestRender();
 			return;
@@ -703,11 +720,11 @@ export default function (pi: ExtensionAPI) {
 				Type.Boolean({ description: "Add a freeform text option. Default: true" }),
 			),
 			timeout: Type.Optional(
-				Type.Number({ description: "Auto-dismiss after N milliseconds (applies to fallback input mode when no options are provided)" }),
+				Type.Number({ description: "Auto-dismiss after N milliseconds. Returns null (cancelled) when expired." }),
 			),
 		}),
 
-		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			if (signal?.aborted) {
 				return {
 					content: [{ type: "text", text: "Cancelled" }],
@@ -754,16 +771,33 @@ export default function (pi: ExtensionAPI) {
 					};
 				}
 
+				pi.events.emit("ask:answered", { question, context: normalizedContext, answer, wasCustom: true });
 				return {
 					content: [{ type: "text", text: `User answered: ${answer}` }],
 					details: { question, context: normalizedContext, options, answer, cancelled: false, wasCustom: true } as AskToolDetails,
 				};
 			}
 
+			onUpdate?.({
+				content: [{ type: "text", text: "Waiting for user input..." }],
+				details: { question, context: normalizedContext, options, answer: null, cancelled: false },
+			});
+
 			let result: string | null;
 			try {
 				result = await ctx.ui.custom<string | null>(
 					(tui, theme, _kb, done) => {
+						// Wire AbortSignal so agent cancellation auto-dismisses the overlay
+						if (signal) {
+							const onAbort = () => done(null);
+							signal.addEventListener("abort", onAbort, { once: true });
+						}
+
+						// Wire timeout for overlay mode
+						if (timeout && timeout > 0) {
+							setTimeout(() => done(null), timeout);
+						}
+
 						return new AskComponent(
 							question,
 							normalizedContext,
@@ -780,6 +814,7 @@ export default function (pi: ExtensionAPI) {
 						overlayOptions: {
 							anchor: "center",
 							width: ASK_OVERLAY_WIDTH,
+							minWidth: ASK_OVERLAY_MIN_WIDTH,
 							maxHeight: "85%",
 							margin: 1,
 						},
@@ -796,12 +831,14 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			if (result === null) {
+				pi.events.emit("ask:cancelled", { question, context: normalizedContext, options });
 				return {
 					content: [{ type: "text", text: "User cancelled the question" }],
 					details: { question, context: normalizedContext, options, answer: null, cancelled: true } as AskToolDetails,
 				};
 			}
 
+			pi.events.emit("ask:answered", { question, context: normalizedContext, answer: result, wasCustom: false });
 			return {
 				content: [{ type: "text", text: `User answered: ${result}` }],
 				details: { question, context: normalizedContext, options, answer: result, cancelled: false } as AskToolDetails,
@@ -825,26 +862,55 @@ export default function (pi: ExtensionAPI) {
 			return new Text(text, 0, 0);
 		},
 
-		renderResult(result, _options, theme) {
+		renderResult(result, options, theme) {
 			const details = result.details as (AskToolDetails & { error?: string }) | undefined;
 
-			// Error state
 			if (details?.error) {
 				return new Text(theme.fg("error", `✗ ${details.error}`), 0, 0);
 			}
 
-			// Cancelled / no details
+			if (options.isPartial) {
+				const waitingText = result.content
+					?.filter((part: { type?: string; text?: string }) => part?.type === "text")
+					.map((part: { text?: string }) => part.text ?? "")
+					.join("\n")
+					.trim() || "Waiting for user input...";
+				return new Text(theme.fg("muted", waitingText), 0, 0);
+			}
+
 			if (!details || details.cancelled) {
 				return new Text(theme.fg("warning", "Cancelled"), 0, 0);
 			}
 
-			// Success
 			const answer = details.answer ?? "";
 			let text = theme.fg("success", "✓ ");
 			if (details.wasCustom) {
 				text += theme.fg("muted", "(wrote) ");
 			}
 			text += theme.fg("accent", answer);
+
+			if (options.expanded) {
+				const selectedTitles = new Set(
+					answer
+						.split(",")
+						.map((value) => value.trim())
+						.filter(Boolean),
+				);
+				text += "\n" + theme.fg("dim", `Q: ${details.question}`);
+				if (details.context) {
+					text += "\n" + theme.fg("dim", details.context);
+				}
+				if (details.options && details.options.length > 0) {
+					text += "\n" + theme.fg("dim", "Options:");
+					for (const opt of details.options) {
+						const desc = opt.description ? ` — ${opt.description}` : "";
+						const isSelected = opt.title === answer || selectedTitles.has(opt.title);
+						const marker = isSelected ? theme.fg("success", "●") : theme.fg("dim", "○");
+						text += `\n  ${marker} ${theme.fg("dim", opt.title)}${theme.fg("dim", desc)}`;
+					}
+				}
+			}
+
 			return new Text(text, 0, 0);
 		},
 	});

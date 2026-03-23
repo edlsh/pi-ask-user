@@ -17,7 +17,7 @@ High-quality video: [ask-user-demo.mp4](./media/ask-user-demo.mp4)
 - Overlay mode — dialog floats over conversation, preserving context
 - Custom TUI rendering for tool calls and results
 - System prompt integration via `promptSnippet` and `promptGuidelines`
-- Optional timeout for auto-dismiss (fallback input mode)
+- Optional timeout for auto-dismiss in both overlay and fallback input modes
 - Structured `details` on all results for session state reconstruction
 - Graceful fallback when interactive UI is unavailable
 - Bundled `ask-user` skill for mandatory decision-gating in high-stakes or ambiguous tasks
@@ -60,7 +60,7 @@ The registered tool name is:
 | `options` | `(string \| {title, description?})[]?` | `[]` | Multiple-choice options |
 | `allowMultiple` | `boolean?` | `false` | Enable multi-select mode |
 | `allowFreeform` | `boolean?` | `true` | Add a "Type something" freeform option |
-| `timeout` | `number?` | — | Auto-dismiss after N ms (applies to fallback input mode) |
+| `timeout` | `number?` | — | Auto-dismiss after N ms and return `null` if the prompt times out |
 
 ## Example usage shape
 
@@ -94,14 +94,4 @@ interface AskToolDetails {
 
 ## Changelog
 
-### 0.3.0
-
-- Added `promptSnippet` and `promptGuidelines` for better LLM tool selection in the system prompt
-- Added `renderCall` and `renderResult` for custom TUI rendering (compact tool call display, ✓/Cancelled result indicators)
-- Added overlay mode — dialog now floats over the conversation instead of clearing the screen
-- Added `timeout` parameter for auto-dismiss in fallback input mode (when no options are provided)
-- Added structured `details` (`AskToolDetails`) to all result paths for session state reconstruction and branching support
-
-### 0.2.1
-
-- Initial public release
+See [CHANGELOG.md](./CHANGELOG.md).

@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.4.1](https://github.com/edlsh/pi-ask-user/releases/tag/v0.4.1) - 2026-03-22
+
+### Added
+
+- Markdown rendering for context sections — uses `Markdown` component with `getMarkdownTheme` when available, falls back to plain `Text`
+- `rawKeyHint()` integration for consistent key hint styling in help text
+- Event emission via `pi.events.emit()` — `ask:answered` and `ask:cancelled` events for external listeners
+- Partial update (`onUpdate`) emitted before showing the overlay, so `renderResult` can display a waiting state while the dialog is open
+- `minWidth` overlay option (40 chars) to prevent the overlay from collapsing on narrow terminals
+- AbortSignal wiring in overlay mode — agent cancellation auto-dismisses the dialog
+- Timeout support in overlay mode (previously only worked in fallback input mode)
+- Expanded result rendering in `renderResult` — shows question, context, and per-option markers (● selected / ○ unselected)
+- `index.test.ts` — test suite covering narrow-terminal overlay, partial-update rendering, and expanded multi-select markers
+
+### Changed
+
+- `Editor` constructor no longer receives `tui` as first argument
+- `timeout` parameter description clarified: returns `null` (cancelled) when expired
+- Removed unused `FREEFORM_VALUE` constant and standalone `submitFreeform()` method (logic inlined into `handleInput`)
+
+### Fixed
+
+- Keep the ask overlay accessible on narrow terminals by removing the visibility gate that could leave prompts hidden and unresolved
+- Render partial `ask_user` updates as a waiting state instead of a successful empty answer, and correctly mark selected options in expanded multi-select results
+
 ## [0.4.0](https://github.com/edlsh/pi-ask-user/releases/tag/v0.4.0) - 2026-03-22
 
 ### Changed
