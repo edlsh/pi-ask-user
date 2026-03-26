@@ -65,4 +65,21 @@ describe("renderSingleSelectRows", () => {
 		expect(rows.length).toBeLessThanOrEqual(6);
 		expect(rows.join(" ").replace(/\s+/g, " ")).toContain("troubleshooting");
 	});
+
+	test("does not duplicate a short word after wrapping an exact-width long word", () => {
+		const rows = renderSingleSelectRows({
+			options: [
+				{
+					title: "Alpha",
+					description: "hi aaaaaaaaaaaaaaaa",
+				},
+			],
+			selectedIndex: 0,
+			width: 12,
+			allowFreeform: false,
+		});
+
+		expect(rows.filter((row) => row.trim() === "hi")).toHaveLength(1);
+		expect(rows.filter((row) => row.trim() === "aaaaaaaa")).toHaveLength(2);
+	});
 });

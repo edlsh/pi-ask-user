@@ -9,6 +9,7 @@ export interface RenderSingleSelectRowsParams {
 	width: number;
 	allowFreeform: boolean;
 	maxRows?: number;
+	hideDescriptions?: boolean;
 }
 
 function wrapText(text: string, width: number): string[] {
@@ -42,12 +43,12 @@ function wrapText(text: string, width: number): string[] {
 		if (word.length <= width) {
 			current = word;
 		} else {
+			current = "";
 			for (let i = 0; i < word.length; i += width) {
 				const chunk = word.slice(i, i + width);
 				if (chunk.length === width || i + width < word.length) lines.push(chunk);
 				else current = chunk;
 			}
-			if (!current || current.length === width) current = "";
 		}
 	}
 
@@ -69,6 +70,7 @@ function buildItemBlocks(
 	width: number,
 	allowFreeform: boolean,
 	selectedIndex: number,
+	hideDescriptions = false,
 ): ItemBlock[] {
 	const normalizedWidth = Math.max(12, width);
 	const freeformLabel = "Type something. — Enter a custom response";
@@ -97,7 +99,7 @@ function buildItemBlocks(
 			lines.push(padLine(lineIndex === 0 ? numberPrefix : continuationPrefix, line));
 		});
 
-		if (item.option.description) {
+		if (item.option.description && !hideDescriptions) {
 			const descriptionPrefix = "      ";
 			const descriptionLines = wrapText(
 				item.option.description,
@@ -122,9 +124,10 @@ export function renderSingleSelectRows({
 	width,
 	allowFreeform,
 	maxRows,
+	hideDescriptions,
 }: RenderSingleSelectRowsParams): string[] {
 	const itemCount = options.length + (allowFreeform ? 1 : 0);
-	const blocks = buildItemBlocks(options, width, allowFreeform, selectedIndex);
+	const blocks = buildItemBlocks(options, width, allowFreeform, selectedIndex, hideDescriptions);
 	const allRows = flatten(blocks);
 
 	if (!Number.isFinite(maxRows) || !maxRows || maxRows <= 0 || allRows.length <= maxRows) {

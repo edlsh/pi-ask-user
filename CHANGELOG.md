@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.5.0](https://github.com/edlsh/pi-ask-user/releases/tag/v0.5.0) - 2026-03-25
+
+### Added
+
+- Searchable single-select option lists — type to filter titles and descriptions without leaving the overlay
+- Responsive split-pane preview for wide terminals — selected options show a details pane while narrow terminals fall back to the single-column list
+- Regression coverage for searchable selection, split-pane rendering, narrow-width fallback, overlay freeform metadata, and wrapping edge cases
+
+### Changed
+
+- Single-select overlay help text now reflects actual Pi-TUI keybindings, including remapped cancel keys and delete/backspace behavior
+- Freeform mode now follows Pi-TUI editor semantics more closely by delegating newline behavior to the shared editor and forwarding Ctrl+Enter to the editor instead of treating it as submit
+
+### Fixed
+
+- Freeform overlay crash caused by constructing `Editor` without the required `tui` argument
+- Overlay freeform answers now preserve `wasCustom: true` in both emitted events and returned `details` metadata
+- Out-of-range number keys in searchable single-select now fall through to filtering instead of being silently swallowed
+- Exact-width word wrapping no longer duplicates preceding short text in wrapped descriptions
+
+
 ## [0.4.1](https://github.com/edlsh/pi-ask-user/releases/tag/v0.4.1) - 2026-03-22
 
 ### Added

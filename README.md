@@ -10,11 +10,13 @@ High-quality video: [ask-user-demo.mp4](./media/ask-user-demo.mp4)
 
 ## Features
 
-- Single-select option lists
+- Searchable single-select option lists with wrapped titles and descriptions
+- Responsive split-pane details preview on wide terminals with single-column fallback on narrow terminals
 - Multi-select option lists
 - Optional freeform responses
 - Context display support
 - Overlay mode — dialog floats over conversation, preserving context
+- Pi-TUI-aligned keybinding and editor behavior
 - Custom TUI rendering for tool calls and results
 - System prompt integration via `promptSnippet` and `promptGuidelines`
 - Optional timeout for auto-dismiss in both overlay and fallback input modes

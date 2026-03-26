@@ -2,18 +2,22 @@
  * Ask Tool Extension - Interactive question UI for pi-coding-agent
  *
  * Refactored to use built-in TUI primitives (Container/Text/Spacer/SelectList/Editor)
- * and DynamicBorder instead of manual ANSI box drawing.
+ * and a custom box border instead of manual ANSI box drawing.
  */
 
 import type { ExtensionAPI, Theme } from "@mariozechner/pi-coding-agent";
-import { DynamicBorder, getMarkdownTheme, rawKeyHint } from "@mariozechner/pi-coding-agent";
+import { getMarkdownTheme } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import {
 	Container,
 	type Component,
+	decodeKittyPrintable,
 	Editor,
 	type EditorTheme,
+	fuzzyFilter,
 	Key,
+	type Keybinding,
+	type KeybindingsManager,
 	Markdown,
 	type MarkdownTheme,
 	matchesKey,
@@ -23,12 +27,7 @@ import {
 	truncateToWidth,
 	wrapTextWithAnsi,
 } from "@mariozechner/pi-tui";
-import { renderSingleSelectRows } from "./single-select-layout";
-
-interface QuestionOption {
-	title: string;
-	description?: string;
-}
+import { renderSingleSelectRows, type QuestionOption } from "./single-select-layout";
 
 type AskOptionInput = QuestionOption | string;
 
@@ -48,6 +47,11 @@ interface AskToolDetails {
 	answer: string | null;
 	cancelled: boolean;
 	wasCustom?: boolean;
+}
+
+interface AskUIResult {
+	answer: string;
+	wasCustom: boolean;
 }
 
 function normalizeOptions(options: AskOptionInput[]): QuestionOption[] {
@@ -90,16 +94,78 @@ function createEditorTheme(theme: Theme): EditorTheme {
 	};
 }
 
+const BOX_BORDER_LEFT = "│ ";
+const BOX_BORDER_RIGHT = " │";
+const BOX_BORDER_OVERHEAD = BOX_BORDER_LEFT.length + BOX_BORDER_RIGHT.length;
+
+class BoxBorderTop implements Component {
+	private color: (s: string) => string;
+	private title?: string;
+	private titleColor?: (s: string) => string;
+	constructor(color: (s: string) => string, title?: string, titleColor?: (s: string) => string) {
+		this.color = color;
+		this.title = title;
+		this.titleColor = titleColor;
+	}
+	invalidate(): void {}
+	render(width: number): string[] {
+		const inner = Math.max(0, width - 2);
+		if (!this.title || inner < this.title.length + 4) {
+			return [this.color(`╭${"─".repeat(inner)}╮`)];
+		}
+		const label = ` ${this.title} `;
+		const remaining = inner - 1 - label.length;
+		const titleStyle = this.titleColor ?? this.color;
+		return [
+			this.color("╭─") + titleStyle(label) + this.color("─".repeat(Math.max(0, remaining)) + "╮"),
+		];
+	}
+}
+
+class BoxBorderBottom implements Component {
+	private color: (s: string) => string;
+	constructor(color: (s: string) => string) {
+		this.color = color;
+	}
+	invalidate(): void {}
+	render(width: number): string[] {
+		const inner = Math.max(0, width - 2);
+		return [this.color(`╰${"─".repeat(inner)}╯`)];
+	}
+}
+
+function formatKeyList(keys: string[]): string {
+	return keys.join("/");
+}
+
+function keybindingHint(
+	theme: Theme,
+	keybindings: KeybindingsManager,
+	keybinding: Keybinding,
+	description: string,
+): string {
+	return `${theme.fg("dim", formatKeyList(keybindings.getKeys(keybinding)))}${theme.fg("muted", ` ${description}`)}`;
+}
+
+function literalHint(theme: Theme, key: string, description: string): string {
+	return `${theme.fg("dim", key)}${theme.fg("muted", ` ${description}`)}`;
+}
+
 type AskMode = "select" | "freeform";
 
 const ASK_OVERLAY_MAX_HEIGHT_RATIO = 0.85;
 const ASK_OVERLAY_WIDTH = "92%";
 const ASK_OVERLAY_MIN_WIDTH = 40;
+const SINGLE_SELECT_SPLIT_PANE_MIN_WIDTH = 84;
+const SINGLE_SELECT_SPLIT_PANE_LEFT_MIN_WIDTH = 32;
+const SINGLE_SELECT_SPLIT_PANE_RIGHT_MIN_WIDTH = 28;
+const SINGLE_SELECT_SPLIT_PANE_SEPARATOR = " │ ";
 
 class MultiSelectList implements Component {
 	private options: QuestionOption[];
 	private allowFreeform: boolean;
 	private theme: Theme;
+	private keybindings: KeybindingsManager;
 	private selectedIndex = 0;
 	private checked = new Set<number>();
 	private cachedWidth?: number;
@@ -109,10 +175,11 @@ class MultiSelectList implements Component {
 	public onSubmit?: (result: string) => void;
 	public onEnterFreeform?: () => void;
 
-	constructor(options: QuestionOption[], allowFreeform: boolean, theme: Theme) {
+	constructor(options: QuestionOption[], allowFreeform: boolean, theme: Theme, keybindings: KeybindingsManager) {
 		this.options = options;
 		this.allowFreeform = allowFreeform;
 		this.theme = theme;
+		this.keybindings = keybindings;
 	}
 
 	invalidate(): void {
@@ -135,7 +202,7 @@ class MultiSelectList implements Component {
 	}
 
 	handleInput(data: string): void {
-		if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c"))) {
+		if (this.keybindings.matches(data, "tui.select.cancel")) {
 			this.onCancel?.();
 			return;
 		}
@@ -146,13 +213,13 @@ class MultiSelectList implements Component {
 			return;
 		}
 
-		if (matchesKey(data, Key.up) || matchesKey(data, Key.shift("tab"))) {
+		if (this.keybindings.matches(data, "tui.select.up") || matchesKey(data, Key.shift("tab"))) {
 			this.selectedIndex = this.selectedIndex === 0 ? count - 1 : this.selectedIndex - 1;
 			this.invalidate();
 			return;
 		}
 
-		if (matchesKey(data, Key.down) || matchesKey(data, Key.tab)) {
+		if (this.keybindings.matches(data, "tui.select.down") || matchesKey(data, Key.tab)) {
 			this.selectedIndex = this.selectedIndex === count - 1 ? 0 : this.selectedIndex + 1;
 			this.invalidate();
 			return;
@@ -180,7 +247,7 @@ class MultiSelectList implements Component {
 			return;
 		}
 
-		if (matchesKey(data, Key.enter)) {
+		if (this.keybindings.matches(data, "tui.select.confirm")) {
 			if (this.isFreeformRow(this.selectedIndex)) {
 				this.onEnterFreeform?.();
 				return;
@@ -269,7 +336,9 @@ class WrappedSingleSelectList implements Component {
 	private options: QuestionOption[];
 	private allowFreeform: boolean;
 	private theme: Theme;
+	private keybindings: KeybindingsManager;
 	private selectedIndex = 0;
+	private searchQuery = "";
 	private maxVisibleRows = 12;
 	private cachedWidth?: number;
 	private cachedLines?: string[];
@@ -278,10 +347,11 @@ class WrappedSingleSelectList implements Component {
 	public onSubmit?: (result: string) => void;
 	public onEnterFreeform?: () => void;
 
-	constructor(options: QuestionOption[], allowFreeform: boolean, theme: Theme) {
+	constructor(options: QuestionOption[], allowFreeform: boolean, theme: Theme, keybindings: KeybindingsManager) {
 		this.options = options;
 		this.allowFreeform = allowFreeform;
 		this.theme = theme;
+		this.keybindings = keybindings;
 	}
 
 	setMaxVisibleRows(rows: number): void {
@@ -297,57 +367,234 @@ class WrappedSingleSelectList implements Component {
 		this.cachedLines = undefined;
 	}
 
-	private getItemCount(): number {
-		return this.options.length + (this.allowFreeform ? 1 : 0);
+	private getFilteredOptions(): QuestionOption[] {
+		return fuzzyFilter(this.options, this.searchQuery, (option) => `${option.title} ${option.description ?? ""}`);
 	}
 
-	private isFreeformRow(index: number): boolean {
-		return this.allowFreeform && index === this.options.length;
+	private getItemCount(filteredOptions: QuestionOption[]): number {
+		return filteredOptions.length + (this.allowFreeform ? 1 : 0);
+	}
+
+	private isFreeformRow(index: number, filteredOptions: QuestionOption[]): boolean {
+		return this.allowFreeform && index === filteredOptions.length;
+	}
+
+	private setSearchQuery(query: string): void {
+		this.searchQuery = query;
+		this.selectedIndex = 0;
+		this.invalidate();
+	}
+
+	private popSearchCharacter(): void {
+		if (!this.searchQuery) return;
+		const characters = [...this.searchQuery];
+		characters.pop();
+		this.setSearchQuery(characters.join(""));
+	}
+
+	private getPrintableInput(data: string): string | null {
+		const kittyPrintable = decodeKittyPrintable(data);
+		if (kittyPrintable !== undefined) return kittyPrintable;
+
+		const characters = [...data];
+		if (characters.length !== 1) return null;
+
+		const [character] = characters;
+		if (!character) return null;
+
+		const code = character.charCodeAt(0);
+		if (code < 32 || code === 0x7f || (code >= 0x80 && code <= 0x9f)) {
+			return null;
+		}
+
+		return character;
+	}
+
+	private styleListLine(line: string, width: number): string {
+		const trimmed = line.trim();
+
+		if (trimmed.startsWith("(")) {
+			return truncateToWidth(this.theme.fg("dim", line), width, "");
+		}
+
+		if (line.startsWith("      ")) {
+			return truncateToWidth(this.theme.fg("muted", line), width, "");
+		}
+
+		if (line.startsWith("→")) {
+			return truncateToWidth(this.theme.fg("accent", this.theme.bold(line)), width, "");
+		}
+
+		return truncateToWidth(this.theme.fg("text", line), width, "");
+	}
+
+	private getSplitPaneWidths(width: number): { left: number; right: number } | null {
+		if (width < SINGLE_SELECT_SPLIT_PANE_MIN_WIDTH) return null;
+
+		const availableWidth = width - SINGLE_SELECT_SPLIT_PANE_SEPARATOR.length;
+		if (availableWidth < SINGLE_SELECT_SPLIT_PANE_LEFT_MIN_WIDTH + SINGLE_SELECT_SPLIT_PANE_RIGHT_MIN_WIDTH) {
+			return null;
+		}
+
+		const preferredLeftWidth = Math.floor(availableWidth * 0.42);
+		const left = Math.max(
+			SINGLE_SELECT_SPLIT_PANE_LEFT_MIN_WIDTH,
+			Math.min(preferredLeftWidth, availableWidth - SINGLE_SELECT_SPLIT_PANE_RIGHT_MIN_WIDTH),
+		);
+		const right = availableWidth - left;
+
+		if (right < SINGLE_SELECT_SPLIT_PANE_RIGHT_MIN_WIDTH) return null;
+		return { left, right };
+	}
+
+	private buildListLines(width: number, filteredOptions: QuestionOption[], hideDescriptions = false): string[] {
+		const lines: string[] = [];
+		const count = this.getItemCount(filteredOptions);
+		const searchValue = this.searchQuery ? this.theme.fg("text", this.searchQuery) : this.theme.fg("dim", "type to filter");
+		lines.push(truncateToWidth(`${this.theme.fg("accent", "Filter:")} ${searchValue}`, width, ""));
+
+		if (this.searchQuery && filteredOptions.length === 0) {
+			lines.push(truncateToWidth(this.theme.fg("warning", "No matching options"), width, ""));
+		}
+
+		if (count === 0) {
+			if (!this.searchQuery) {
+				lines.push(truncateToWidth(this.theme.fg("warning", "No options"), width, ""));
+			}
+			return lines.slice(0, this.maxVisibleRows);
+		}
+
+		const maxRows = Math.max(1, this.maxVisibleRows - lines.length);
+		const optionLines = renderSingleSelectRows({
+			options: filteredOptions,
+			selectedIndex: this.selectedIndex,
+			width,
+			allowFreeform: this.allowFreeform,
+			maxRows,
+			hideDescriptions,
+		}).map((line) => this.styleListLine(line, width));
+
+		lines.push(...optionLines);
+		return lines.slice(0, this.maxVisibleRows);
+	}
+
+	private buildPreviewLines(width: number, filteredOptions: QuestionOption[], maxLines: number): string[] {
+		if (maxLines <= 0) return [];
+
+		const lines: string[] = [];
+		const pushWrapped = (text: string, style: (line: string) => string): void => {
+			for (const line of wrapTextWithAnsi(text, Math.max(10, width))) {
+				lines.push(truncateToWidth(style(line), width, ""));
+			}
+		};
+		const pushBlank = (): void => {
+			if (lines.length === 0 || lines[lines.length - 1] !== "") {
+				lines.push("");
+			}
+		};
+
+		pushWrapped("Details", (line) => this.theme.fg("accent", this.theme.bold(line)));
+		pushBlank();
+
+		if (this.isFreeformRow(this.selectedIndex, filteredOptions)) {
+			pushWrapped("Custom response", (line) => this.theme.fg("text", this.theme.bold(line)));
+			pushBlank();
+			pushWrapped("Open the editor to write any answer.", (line) => this.theme.fg("text", line));
+			pushBlank();
+			pushWrapped("Use this when none of the listed options fit.", (line) => this.theme.fg("muted", line));
+			if (this.searchQuery) {
+				pushBlank();
+				pushWrapped(`Current filter: ${this.searchQuery}`, (line) => this.theme.fg("dim", line));
+			}
+		} else {
+			const selected = filteredOptions[this.selectedIndex];
+			if (!selected) {
+				pushWrapped("No option selected", (line) => this.theme.fg("muted", line));
+			} else {
+				pushWrapped(selected.title, (line) => this.theme.fg("text", this.theme.bold(line)));
+				pushBlank();
+				if (selected.description?.trim()) {
+					pushWrapped(selected.description, (line) => this.theme.fg("text", line));
+				} else {
+					pushWrapped("No additional details provided for this option.", (line) => this.theme.fg("muted", line));
+				}
+				pushBlank();
+				pushWrapped("Press Enter to select this option.", (line) => this.theme.fg("dim", line));
+				if (this.searchQuery) {
+					pushBlank();
+					pushWrapped(`Filter: ${this.searchQuery}`, (line) => this.theme.fg("dim", line));
+				}
+			}
+		}
+
+		while (lines.length > 0 && lines[lines.length - 1] === "") {
+			lines.pop();
+		}
+
+		if (lines.length <= maxLines) return lines;
+		if (maxLines === 1) return [truncateToWidth(this.theme.fg("dim", "…"), width, "")];
+
+		const visibleLines = lines.slice(0, maxLines - 1);
+		visibleLines.push(truncateToWidth(this.theme.fg("dim", "…"), width, ""));
+		return visibleLines;
 	}
 
 	handleInput(data: string): void {
-		if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c"))) {
+		if (this.searchQuery && matchesKey(data, Key.escape)) {
+			this.setSearchQuery("");
+			return;
+		}
+
+		if (this.keybindings.matches(data, "tui.select.cancel")) {
 			this.onCancel?.();
 			return;
 		}
 
-		const count = this.getItemCount();
-		if (count === 0) {
-			this.onCancel?.();
-			return;
-		}
+		const filteredOptions = this.getFilteredOptions();
+		const count = this.getItemCount(filteredOptions);
 
-		if (matchesKey(data, Key.up) || matchesKey(data, Key.shift("tab"))) {
+		if ((this.keybindings.matches(data, "tui.select.up") || matchesKey(data, Key.shift("tab"))) && count > 0) {
 			this.selectedIndex = this.selectedIndex === 0 ? count - 1 : this.selectedIndex - 1;
 			this.invalidate();
 			return;
 		}
 
-		if (matchesKey(data, Key.down) || matchesKey(data, Key.tab)) {
+		if ((this.keybindings.matches(data, "tui.select.down") || matchesKey(data, Key.tab)) && count > 0) {
 			this.selectedIndex = this.selectedIndex === count - 1 ? 0 : this.selectedIndex + 1;
 			this.invalidate();
 			return;
 		}
 
 		const numMatch = data.match(/^[1-9]$/);
-		if (numMatch) {
+		if (numMatch && count > 0) {
 			const idx = Number.parseInt(numMatch[0], 10) - 1;
 			if (idx >= 0 && idx < count) {
 				this.selectedIndex = idx;
 				this.invalidate();
+				return;
 			}
-			return;
 		}
 
-		if (matchesKey(data, Key.enter)) {
-			if (this.isFreeformRow(this.selectedIndex)) {
+		if (this.keybindings.matches(data, "tui.select.confirm") && count > 0) {
+			if (this.isFreeformRow(this.selectedIndex, filteredOptions)) {
 				this.onEnterFreeform?.();
 				return;
 			}
 
-			const result = this.options[this.selectedIndex]?.title;
+			const result = filteredOptions[this.selectedIndex]?.title;
 			if (result) this.onSubmit?.(result);
 			else this.onCancel?.();
+			return;
+		}
+
+		if (this.keybindings.matches(data, "tui.editor.deleteCharBackward") || matchesKey(data, Key.backspace)) {
+			this.popSearchCharacter();
+			return;
+		}
+
+		const printableInput = this.getPrintableInput(data);
+		if (printableInput) {
+			this.setSearchQuery(this.searchQuery + printableInput);
 		}
 	}
 
@@ -356,37 +603,26 @@ class WrappedSingleSelectList implements Component {
 			return this.cachedLines;
 		}
 
-		const count = this.getItemCount();
-		if (count === 0) {
-			this.cachedLines = [this.theme.fg("warning", "No options")];
-			this.cachedWidth = width;
-			return this.cachedLines;
+		const filteredOptions = this.getFilteredOptions();
+		const count = this.getItemCount(filteredOptions);
+		this.selectedIndex = count > 0 ? Math.max(0, Math.min(this.selectedIndex, count - 1)) : 0;
+
+		const splitPane = this.getSplitPaneWidths(width);
+		let lines: string[];
+
+		if (!splitPane) {
+			lines = this.buildListLines(width, filteredOptions);
+		} else {
+			const listLines = this.buildListLines(splitPane.left, filteredOptions, true);
+			const previewLines = this.buildPreviewLines(splitPane.right, filteredOptions, this.maxVisibleRows);
+			const rowCount = Math.min(this.maxVisibleRows, Math.max(listLines.length, previewLines.length));
+			const separator = this.theme.fg("dim", SINGLE_SELECT_SPLIT_PANE_SEPARATOR);
+			lines = Array.from({ length: rowCount }, (_, index) => {
+				const left = truncateToWidth(listLines[index] ?? "", splitPane.left, "", true);
+				const right = truncateToWidth(previewLines[index] ?? "", splitPane.right, "");
+				return `${left}${separator}${right}`;
+			});
 		}
-
-		const lines = renderSingleSelectRows({
-			options: this.options,
-			selectedIndex: this.selectedIndex,
-			width,
-			allowFreeform: this.allowFreeform,
-			maxRows: this.maxVisibleRows,
-		}).map((line) => {
-			const trimmed = line.trim();
-			let styled = line;
-
-			if (trimmed.startsWith("(")) {
-				styled = this.theme.fg("dim", line);
-			} else if (line.startsWith("      ")) {
-				styled = this.theme.fg("muted", line);
-			} else if (line.startsWith("→")) {
-				styled = this.theme.fg("accent", this.theme.bold(line));
-			} else if (trimmed.startsWith("Type something.")) {
-				styled = this.theme.fg("text", line);
-			} else {
-				styled = this.theme.fg("text", line);
-			}
-
-			return truncateToWidth(styled, width, "");
-		});
 
 		this.cachedWidth = width;
 		this.cachedLines = lines;
@@ -406,7 +642,8 @@ class AskComponent extends Container {
 	private allowFreeform: boolean;
 	private tui: TUI;
 	private theme: Theme;
-	private onDone: (result: string | null) => void;
+	private keybindings: KeybindingsManager;
+	private onDone: (result: AskUIResult | null) => void;
 
 	private mode: AskMode = "select";
 
@@ -442,7 +679,8 @@ class AskComponent extends Container {
 		allowFreeform: boolean,
 		tui: TUI,
 		theme: Theme,
-		onDone: (result: string | null) => void,
+		keybindings: KeybindingsManager,
+		onDone: (result: AskUIResult | null) => void,
 	) {
 		super();
 
@@ -453,10 +691,15 @@ class AskComponent extends Container {
 		this.allowFreeform = allowFreeform;
 		this.tui = tui;
 		this.theme = theme;
+		this.keybindings = keybindings;
 		this.onDone = onDone;
 
 		// Layout skeleton
-		this.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+		this.addChild(new BoxBorderTop(
+			(s: string) => theme.fg("accent", s),
+			"ask_user",
+			(s: string) => theme.fg("dim", theme.bold(s)),
+		));
 		this.addChild(new Spacer(1));
 
 		this.titleText = new Text("", 1, 0);
@@ -490,7 +733,7 @@ class AskComponent extends Container {
 		this.addChild(this.helpText);
 
 		this.addChild(new Spacer(1));
-		this.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+		this.addChild(new BoxBorderBottom((s: string) => theme.fg("accent", s)));
 
 		this.updateStaticText();
 		this.showSelectMode();
@@ -503,16 +746,31 @@ class AskComponent extends Container {
 	}
 
 	override render(width: number): string[] {
+		const innerWidth = Math.max(1, width - BOX_BORDER_OVERHEAD);
+
 		if (this.mode === "select" && !this.allowMultiple) {
 			const overlayMaxHeight = Math.max(12, Math.floor(this.tui.terminal.rows * ASK_OVERLAY_MAX_HEIGHT_RATIO));
-			const staticLines = this.countStaticLines(width);
+			const staticLines = this.countStaticLines(innerWidth);
 			const availableOptionRows = Math.max(4, overlayMaxHeight - staticLines);
 			this.ensureSingleSelectList().setMaxVisibleRows(availableOptionRows);
 		}
 
-		// Defensive: ensure no line exceeds width, otherwise pi-tui will hard-crash.
-		const lines = super.render(width);
-		return lines.map((l) => truncateToWidth(l, width, ""));
+		// Render children at the inner width (excluding side border characters)
+		const rawLines = super.render(innerWidth);
+
+		// First and last lines are the top/bottom box borders — pass through at full width.
+		// All inner lines get wrapped with side borders.
+		const borderColor = (s: string) => this.theme.fg("accent", s);
+		const titleColor = (s: string) => this.theme.fg("dim", this.theme.bold(s));
+		return rawLines.map((line, index) => {
+			if (index === 0 || index === rawLines.length - 1) {
+				// Box top/bottom borders already rendered at innerWidth — re-render at full width
+				if (index === 0) return new BoxBorderTop(borderColor, "ask_user", titleColor).render(width)[0];
+				return new BoxBorderBottom(borderColor).render(width)[0];
+			}
+			const padded = truncateToWidth(line, innerWidth, "", true);
+			return `${borderColor(BOX_BORDER_LEFT)}${padded}${borderColor(BOX_BORDER_RIGHT)}`;
+		});
 	}
 
 	private countWrappedLines(text: string, width: number): number {
@@ -549,30 +807,45 @@ class AskComponent extends Container {
 	private updateHelpText(): void {
 		const theme = this.theme;
 		if (this.mode === "freeform") {
+			const alternateCancelKeys = this.keybindings
+				.getKeys("tui.select.cancel")
+				.filter((key) => key !== "escape" && key !== "esc");
 			const hints = [
-				rawKeyHint("enter", "submit"),
-				rawKeyHint("shift+enter", "newline"),
-				rawKeyHint("esc", "back"),
-				rawKeyHint("ctrl+c", "cancel"),
-			].join(" • ");
+				keybindingHint(theme, this.keybindings, "tui.input.submit", "submit"),
+				keybindingHint(theme, this.keybindings, "tui.input.newLine", "newline"),
+				literalHint(theme, "esc", "back"),
+				alternateCancelKeys.length > 0 ? literalHint(theme, formatKeyList(alternateCancelKeys), "cancel") : null,
+			]
+				.filter((hint): hint is string => !!hint)
+				.join(" • ");
 			this.helpText.setText(theme.fg("dim", hints));
 			return;
 		}
 
 		if (this.allowMultiple) {
 			const hints = [
-				rawKeyHint("↑↓", "navigate"),
-				rawKeyHint("space", "toggle"),
-				rawKeyHint("enter", "submit"),
-				rawKeyHint("esc", "cancel"),
+				literalHint(theme, "↑↓", "navigate"),
+				literalHint(theme, "space", "toggle"),
+				keybindingHint(theme, this.keybindings, "tui.select.confirm", "submit"),
+				keybindingHint(theme, this.keybindings, "tui.select.cancel", "cancel"),
 			].join(" • ");
 			this.helpText.setText(theme.fg("dim", hints));
 		} else {
+			const alternateCancelKeys = this.keybindings
+				.getKeys("tui.select.cancel")
+				.filter((key) => key !== "escape" && key !== "esc");
 			const hints = [
-				rawKeyHint("↑↓", "navigate"),
-				rawKeyHint("enter", "select"),
-				rawKeyHint("esc", "cancel"),
-			].join(" • ");
+				literalHint(theme, "type", "filter"),
+				keybindingHint(theme, this.keybindings, "tui.editor.deleteCharBackward", "erase"),
+				literalHint(theme, "↑↓", "navigate"),
+				keybindingHint(theme, this.keybindings, "tui.select.confirm", "select"),
+				literalHint(theme, "esc", "clear/cancel"),
+				alternateCancelKeys.length > 0
+					? literalHint(theme, formatKeyList(alternateCancelKeys), "cancel")
+					: null,
+			]
+				.filter((hint): hint is string => !!hint)
+				.join(" • ");
 			this.helpText.setText(theme.fg("dim", hints));
 		}
 	}
@@ -580,8 +853,8 @@ class AskComponent extends Container {
 	private ensureSingleSelectList(): WrappedSingleSelectList {
 		if (this.singleSelectList) return this.singleSelectList;
 
-		const list = new WrappedSingleSelectList(this.options, this.allowFreeform, this.theme);
-		list.onSubmit = (result) => this.onDone(result);
+		const list = new WrappedSingleSelectList(this.options, this.allowFreeform, this.theme, this.keybindings);
+		list.onSubmit = (result) => this.onDone({ answer: result, wasCustom: false });
 		list.onCancel = () => this.onDone(null);
 		list.onEnterFreeform = () => this.showFreeformMode();
 
@@ -592,9 +865,9 @@ class AskComponent extends Container {
 	private ensureMultiSelectList(): MultiSelectList {
 		if (this.multiSelectList) return this.multiSelectList;
 
-		const list = new MultiSelectList(this.options, this.allowFreeform, this.theme);
+		const list = new MultiSelectList(this.options, this.allowFreeform, this.theme, this.keybindings);
 		list.onCancel = () => this.onDone(null);
-		list.onSubmit = (result) => this.onDone(result);
+		list.onSubmit = (result) => this.onDone({ answer: result, wasCustom: false });
 		list.onEnterFreeform = () => this.showFreeformMode();
 
 		this.multiSelectList = list;
@@ -603,11 +876,11 @@ class AskComponent extends Container {
 
 	private ensureEditor(): Editor {
 		if (this.editor) return this.editor;
-		const editor = new Editor(createEditorTheme(this.theme));
+		const editor = new Editor(this.tui, createEditorTheme(this.theme));
 		editor.disableSubmit = false;
 		editor.onSubmit = (text: string) => {
 			const trimmed = text.trim();
-			this.onDone(trimmed ? trimmed : null);
+			this.onDone(trimmed ? { answer: trimmed, wasCustom: true } : null);
 		};
 		this.editor = editor;
 		return editor;
@@ -651,15 +924,8 @@ class AskComponent extends Container {
 				return;
 			}
 
-			if (matchesKey(data, Key.ctrl("c"))) {
+			if (this.keybindings.matches(data, "tui.select.cancel")) {
 				this.onDone(null);
-				return;
-			}
-
-			if (matchesKey(data, Key.ctrl("enter")) || matchesKey(data, "ctrl+enter")) {
-				const editor = this.ensureEditor();
-				const text = editor.getText().trim();
-				this.onDone(text ? text : null);
 				return;
 			}
 
@@ -783,10 +1049,10 @@ export default function (pi: ExtensionAPI) {
 				details: { question, context: normalizedContext, options, answer: null, cancelled: false },
 			});
 
-			let result: string | null;
+			let result: AskUIResult | null;
 			try {
-				result = await ctx.ui.custom<string | null>(
-					(tui, theme, _kb, done) => {
+				result = await ctx.ui.custom<AskUIResult | null>(
+					(tui, theme, keybindings, done) => {
 						// Wire AbortSignal so agent cancellation auto-dismisses the overlay
 						if (signal) {
 							const onAbort = () => done(null);
@@ -806,6 +1072,7 @@ export default function (pi: ExtensionAPI) {
 							allowFreeform,
 							tui,
 							theme,
+							keybindings,
 							done,
 						);
 					},
@@ -838,10 +1105,22 @@ export default function (pi: ExtensionAPI) {
 				};
 			}
 
-			pi.events.emit("ask:answered", { question, context: normalizedContext, answer: result, wasCustom: false });
+			pi.events.emit("ask:answered", {
+				question,
+				context: normalizedContext,
+				answer: result.answer,
+				wasCustom: result.wasCustom,
+			});
 			return {
-				content: [{ type: "text", text: `User answered: ${result}` }],
-				details: { question, context: normalizedContext, options, answer: result, cancelled: false } as AskToolDetails,
+				content: [{ type: "text", text: `User answered: ${result.answer}` }],
+				details: {
+					question,
+					context: normalizedContext,
+					options,
+					answer: result.answer,
+					cancelled: false,
+					wasCustom: result.wasCustom,
+				} as AskToolDetails,
 			};
 		},
 
