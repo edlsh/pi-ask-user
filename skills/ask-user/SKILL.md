@@ -54,6 +54,8 @@ Call `ask_user` with one decision at a time:
 - `options`: 2-5 clear choices when possible
 - `allowMultiple`: `false` unless independent selections are genuinely needed
 - `allowFreeform`: usually `true`
+- Ask exactly one focused question per `ask_user` call.
+- Do **not** bundle multiple numbered, multipart, or unrelated questions into one prompt.
 
 ### 5) Commit the decision
 After response:
@@ -96,6 +98,7 @@ Use:
 Avoid:
 - broad/open prompts with no decision boundary
 - multiple unrelated decisions in one question
+- multiple numbered or multipart questions in one `ask_user` call
 - questions that should be answered by reading code/docs first
 
 ### Option quality
@@ -146,6 +149,7 @@ Good options include a short description when trade-offs are non-obvious.
 - Using it for trivial formatting choices
 - Forcing options when freeform is clearly better
 - Asking the same question repeatedly without new information
+- Bundling several separate questions into one `ask_user` call
 - Proceeding with high-stakes implementation after unclear/cancelled answer
 
 ## If user cancels or answer is unclear

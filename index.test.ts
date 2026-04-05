@@ -120,6 +120,9 @@ beforeAll(() => {
 });
 
 type RegisteredTool = {
+   description?: string;
+   promptSnippet?: string;
+   promptGuidelines?: string[];
    execute: (...args: any[]) => Promise<any>;
    renderResult: (result: any, options: any, theme: any) => any;
 };
@@ -156,6 +159,14 @@ function createTheme() {
 }
 
 describe("ask_user", () => {
+   test("registers guidance to ask exactly one focused question per call", async () => {
+      const tool = await setupTool();
+      const guidance = [tool.description, tool.promptSnippet, ...(tool.promptGuidelines ?? [])].join("\n");
+
+      expect(guidance).toContain("Ask exactly one focused question per call");
+      expect(guidance).toContain("Do not combine multiple numbered, multipart, or unrelated questions into one ask_user prompt");
+   });
+
    test("does not hide the overlay on narrow terminals", async () => {
       const tool = await setupTool();
       let capturedOptions: any;
