@@ -35,6 +35,8 @@ Use this protocol whenever the trigger matrix says to ask.
    - prepare concise trade-off context (3–7 bullets or short paragraph)
 4. **Ask one focused question**
    - call `ask_user` for one decision at a time
+   - ask exactly one focused question per `ask_user` call
+   - do not bundle multiple numbered, multipart, or unrelated questions into one prompt
 5. **Commit and proceed**
    - restate chosen option and implement accordingly
 

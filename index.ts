@@ -1017,12 +1017,14 @@ export default function(pi: ExtensionAPI) {
       name: "ask_user",
       label: "Ask User",
       description:
-         "Ask the user a question with optional multiple-choice answers. Use this to gather information interactively. Before calling, gather context with tools (read/web/ref) and pass a short summary via the context field.",
+         "Ask the user a question with optional multiple-choice answers. Use this to gather information interactively. Ask exactly one focused question per call. Before calling, gather context with tools (read/web/ref) and pass a short summary via the context field.",
       promptSnippet:
-         "Ask the user a question with optional multiple-choice answers to gather information interactively",
+         "Ask the user one focused question with optional multiple-choice answers to gather information interactively",
       promptGuidelines: [
          "Before calling ask_user, gather context with tools (read/web/ref) and pass a short summary via the context field.",
          "Use ask_user when the user's intent is ambiguous, when a decision requires explicit user input, or when multiple valid options exist.",
+         "Ask exactly one focused question per ask_user call.",
+         "Do not combine multiple numbered, multipart, or unrelated questions into one ask_user prompt.",
       ],
       parameters: Type.Object({
          question: Type.String({ description: "The question to ask the user" }),
