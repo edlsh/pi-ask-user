@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.6.1](https://github.com/edlsh/pi-ask-user/releases/tag/v0.6.1) - 2026-04-07
+
+### Changed
+
+- Clarified the registered `ask_user` tool guidance so agents are instructed to ask exactly one focused question per call and avoid multipart or unrelated prompts
+
 ## [0.6.0](https://github.com/edlsh/pi-ask-user/releases/tag/v0.6.0) - 2026-04-07
 
 ### Added
