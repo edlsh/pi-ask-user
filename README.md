@@ -14,6 +14,7 @@ High-quality video: [ask-user-demo.mp4](./media/ask-user-demo.mp4)
 - Responsive split-pane details preview on wide terminals with single-column fallback on narrow terminals
 - Multi-select option lists
 - Optional freeform responses
+- User-toggleable extra context on structured selections
 - Context display support
 - Overlay mode — dialog floats over conversation, preserving context
 - Pi-TUI-aligned keybinding and editor behavior
@@ -62,6 +63,7 @@ The registered tool name is:
 | `options` | `(string \| {title, description?})[]?` | `[]` | Multiple-choice options |
 | `allowMultiple` | `boolean?` | `false` | Enable multi-select mode |
 | `allowFreeform` | `boolean?` | `true` | Add a "Type something" freeform option |
+| `allowComment` | `boolean?` | `false` | Expose a user-toggleable extra-context option in the overlay (`ctrl+g` or the toggle row) and collect an optional comment in fallback dialogs |
 | `timeout` | `number?` | — | Auto-dismiss after N ms and return `null` if the prompt times out |
 
 ## Example usage shape
@@ -75,7 +77,8 @@ The registered tool name is:
     { "title": "production", "description": "Customer-facing" }
   ],
   "allowMultiple": false,
-  "allowFreeform": true
+  "allowFreeform": true,
+  "allowComment": true
 }
 ```
 
@@ -84,13 +87,16 @@ The registered tool name is:
 All tool results include a structured `details` object for rendering and session state reconstruction:
 
 ```typescript
+type AskResponse =
+  | { kind: "selection"; selections: string[]; comment?: string }
+  | { kind: "freeform"; text: string };
+
 interface AskToolDetails {
   question: string;
   context?: string;
   options: QuestionOption[];
-  answer: string | null;
+  response: AskResponse | null;
   cancelled: boolean;
-  wasCustom?: boolean;
 }
 ```
 

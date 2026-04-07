@@ -220,7 +220,7 @@ describe("ask_user", () => {
             details: {
                question: "Choose one or more",
                options: [{ title: "A" }, { title: "B" }, { title: "C" }],
-               answer: "A, B",
+               response: { kind: "selection", selections: ["A", "B"] },
                cancelled: false,
             },
          },
@@ -234,6 +234,30 @@ describe("ask_user", () => {
       expect(rendered).toContain("● B");
       expect(rendered).toContain("○ C");
    });
+
+   test("renders selection comments separately in expanded results", async () => {
+      const tool = await setupTool();
+      const component = tool.renderResult(
+         {
+            content: [{ type: "text", text: "User answered: Blue" }],
+            details: {
+               question: "Pick a color",
+               options: [{ title: "Red" }, { title: "Blue" }, { title: "Green" }],
+               response: { kind: "selection", selections: ["Blue"], comment: "Match the current brand palette." },
+               cancelled: false,
+            },
+         },
+         { expanded: true, isPartial: false },
+         createTheme(),
+      ) as any;
+
+      const rendered = component.render(120).join("\n");
+
+      expect(rendered).toContain("● Blue");
+      expect(rendered).toContain("Comment:");
+      expect(rendered).toContain("Match the current brand palette.");
+   });
+
 
    test("enters freeform mode without editor theme crashes", async () => {
       const tool = await setupTool();
@@ -305,7 +329,7 @@ describe("ask_user", () => {
       );
 
       expect(result.isError).not.toBe(true);
-      expect(result.details.answer).toBe("A");
+      expect(result.details.response).toEqual({ kind: "selection", selections: ["A"] });
       expect(result.details.cancelled).toBe(false);
    });
 
@@ -387,7 +411,46 @@ describe("ask_user", () => {
       );
 
       expect(result.isError).not.toBe(true);
-      expect(result.details.answer).toBe("Beta");
+      expect(result.details.response).toEqual({ kind: "selection", selections: ["Beta"] });
+      expect(result.details.cancelled).toBe(false);
+   });
+
+   test("keeps single-select search usable when comment toggling is enabled", async () => {
+      const tool = await setupTool();
+
+      const result = await tool.execute(
+         "tool-call-id",
+         {
+            question: "Which option should we use?",
+            options: ["Chrome", "Firefox", "Safari"],
+            allowComment: true,
+         },
+         undefined,
+         undefined,
+         {
+            hasUI: true,
+            ui: {
+               custom: async (factory: any) => {
+                  let resolved: string | null | undefined;
+                  const component = factory(
+                     { requestRender() { }, terminal: { rows: 24 } },
+                     createTheme(),
+                     createKeybindings(),
+                     (value: string | null) => {
+                        resolved = value;
+                     },
+                  );
+
+                  component.handleInput("c");
+                  component.handleInput("enter");
+                  return resolved ?? null;
+               },
+            },
+         },
+      );
+
+      expect(result.isError).not.toBe(true);
+      expect(result.details.response).toEqual({ kind: "selection", selections: ["Chrome"] });
       expect(result.details.cancelled).toBe(false);
    });
 
@@ -425,14 +488,13 @@ describe("ask_user", () => {
       );
 
       expect(result.isError).not.toBe(true);
-      expect(result.details.answer).toBe("Beta 7");
+      expect(result.details.response).toEqual({ kind: "selection", selections: ["Beta 7"] });
       expect(result.details.cancelled).toBe(false);
    });
 
    test("keeps freeform available when search filters out every option", async () => {
       const tool = await setupTool();
       editorInputs = [];
-      editorText = "custom from editor";
 
       const result = await tool.execute(
          "tool-call-id",
@@ -461,6 +523,7 @@ describe("ask_user", () => {
                   component.handleInput("z");
                   component.handleInput("z");
                   component.handleInput("enter");
+                  editorText = "custom from editor";
                   component.handleInput("enter");
                   return resolved ?? null;
                },
@@ -471,10 +534,9 @@ describe("ask_user", () => {
       const answeredEvent = emittedEvents.find((event) => event.name === "ask:answered");
 
       expect(result.isError).not.toBe(true);
-      expect(result.details.answer).toBe("custom from editor");
-      expect(result.details.wasCustom).toBe(true);
+      expect(result.details.response).toEqual({ kind: "freeform", text: "custom from editor" });
       expect(result.details.cancelled).toBe(false);
-      expect(answeredEvent?.payload.wasCustom).toBe(true);
+      expect(answeredEvent?.payload.response).toEqual({ kind: "freeform", text: "custom from editor" });
       expect(editorInputs).toEqual(["enter"]);
    });
 
@@ -628,6 +690,185 @@ describe("ask_user", () => {
       expect(rendered).not.toContain(" │ ");
       expect(rendered).toContain("The alpha option keeps the rollout conservative.");
    });
+   test("submits immediately when the comment toggle is off", async () => {
+      const tool = await setupTool();
+
+      const result = await tool.execute(
+         "tool-call-id",
+         {
+            question: "Which option should we use?",
+            options: ["Alpha", "Beta"],
+            allowComment: true,
+         },
+         undefined,
+         undefined,
+         {
+            hasUI: true,
+            ui: {
+               custom: async (factory: any) => {
+                  let resolved: any;
+                  const component = factory(
+                     { requestRender() { }, terminal: { rows: 24 } },
+                     createTheme(),
+                     createKeybindings(),
+                     (value: any) => {
+                        resolved = value;
+                     },
+                  );
+
+                  component.handleInput("enter");
+                  return resolved ?? null;
+               },
+            },
+         },
+      );
+
+      expect(result.isError).not.toBe(true);
+      expect(result.details.response).toEqual({ kind: "selection", selections: ["Alpha"] });
+      expect(result.details.cancelled).toBe(false);
+   });
+
+   test("toggles extra context with the ctrl+g key and shows it in help text", async () => {
+      const tool = await setupTool();
+      let renderedBefore = "";
+      let renderedAfter = "";
+      let helpText = "";
+
+      const result = await tool.execute(
+         "tool-call-id",
+         {
+            question: "Which option should we use?",
+            options: ["Alpha", "Beta"],
+            allowComment: true,
+         },
+         undefined,
+         undefined,
+         {
+            hasUI: true,
+            ui: {
+               custom: async (factory: any) => {
+                  const component = factory(
+                     { requestRender() { }, terminal: { rows: 24 } },
+                     createTheme(),
+                     createKeybindings(),
+                     () => { },
+                  );
+
+                  renderedBefore = ((component as any).singleSelectList as any).render(80).join("\n");
+                  helpText = (component as any).helpText.render().join("\n");
+                  component.handleInput("ctrl+g");
+                  renderedAfter = ((component as any).singleSelectList as any).render(80).join("\n");
+                  return null;
+               },
+            },
+         },
+      );
+
+      expect(result.isError).not.toBe(true);
+      expect(renderedBefore).toContain("[ ] Add extra context after selection");
+      expect(renderedAfter).toContain("[✓] Add extra context after selection");
+      expect(helpText).toContain("ctrl+g toggle context");
+   });
+
+
+   test("collects an optional comment after a single selection before resolving", async () => {
+      const tool = await setupTool();
+
+      const result = await tool.execute(
+         "tool-call-id",
+         {
+            question: "Which option should we use?",
+            options: ["Alpha", "Beta"],
+            allowComment: true,
+         },
+         undefined,
+         undefined,
+         {
+            hasUI: true,
+            ui: {
+               custom: async (factory: any) => {
+                  let resolved: any;
+                  const component = factory(
+                     { requestRender() { }, terminal: { rows: 24 } },
+                     createTheme(),
+                     createKeybindings(),
+                     (value: any) => {
+                        resolved = value;
+                     },
+                  );
+
+                  component.handleInput("ctrl+g");
+                  component.handleInput("enter");
+                  expect(resolved).toBeUndefined();
+                  editorText = "Needs audit logging before rollout.";
+                  component.handleInput("enter");
+                  return resolved ?? null;
+               },
+            },
+         },
+      );
+
+      expect(result.isError).not.toBe(true);
+      expect(result.details.response).toEqual({
+         kind: "selection",
+         selections: ["Alpha"],
+         comment: "Needs audit logging before rollout.",
+      });
+      expect(result.details.cancelled).toBe(false);
+   });
+
+   test("collects an optional comment for multi-select answers", async () => {
+      const tool = await setupTool();
+
+      const result = await tool.execute(
+         "tool-call-id",
+         {
+            question: "Which options should we use?",
+            options: ["Alpha", "Beta", "Gamma"],
+            allowMultiple: true,
+            allowComment: true,
+         },
+         undefined,
+         undefined,
+         {
+            hasUI: true,
+            ui: {
+               custom: async (factory: any) => {
+                  let resolved: any;
+                  const component = factory(
+                     { requestRender() { }, terminal: { rows: 24 } },
+                     createTheme(),
+                     createKeybindings(),
+                     (value: any) => {
+                        resolved = value;
+                     },
+                  );
+
+                  component.handleInput("space");
+                  component.handleInput("down");
+                  component.handleInput("down");
+                  component.handleInput("space");
+                  component.handleInput("ctrl+g");
+                  component.handleInput("enter");
+                  expect(resolved).toBeUndefined();
+                  editorText = "Roll out both behind the same flag.";
+                  component.handleInput("enter");
+                  return resolved ?? null;
+               },
+            },
+         },
+      );
+
+      expect(result.isError).not.toBe(true);
+      expect(result.details.response).toEqual({
+         kind: "selection",
+         selections: ["Alpha", "Gamma"],
+         comment: "Roll out both behind the same flag.",
+      });
+      expect(result.details.cancelled).toBe(false);
+   });
+
+
    describe("RPC fallback (custom() returns undefined)", () => {
       test("single-select falls back to ctx.ui.select()", async () => {
          const tool = await setupTool();
@@ -658,8 +899,7 @@ describe("ask_user", () => {
          );
 
          expect(result.isError).not.toBe(true);
-         expect(result.details.answer).toBe("Blue");
-         expect(result.details.wasCustom).toBe(false);
+         expect(result.details.response).toEqual({ kind: "selection", selections: ["Blue"] });
          expect(result.details.cancelled).toBe(false);
          expect(selectTitle).toContain("Pick a color");
          expect(selectOptions).toEqual(["Red", "Blue"]);
@@ -692,7 +932,7 @@ describe("ask_user", () => {
          );
 
          expect(result.isError).not.toBe(true);
-         expect(result.details.answer).toBe("Red");
+         expect(result.details.response).toEqual({ kind: "selection", selections: ["Red"] });
          // Last option should be the freeform sentinel
          expect(selectOptions).toHaveLength(3);
          expect(selectOptions[2]).toContain("Type custom response");
@@ -727,8 +967,7 @@ describe("ask_user", () => {
 
          expect(result.isError).not.toBe(true);
          expect(inputCalled).toBe(true);
-         expect(result.details.answer).toBe("Purple");
-         expect(result.details.wasCustom).toBe(true);
+         expect(result.details.response).toEqual({ kind: "freeform", text: "Purple" });
       });
 
       test("multi-select degrades to input() with options in prompt", async () => {
@@ -758,13 +997,49 @@ describe("ask_user", () => {
          );
 
          expect(result.isError).not.toBe(true);
-         expect(result.details.answer).toBe("Red, Green");
-         expect(result.details.wasCustom).toBe(true);
+         expect(result.details.response).toEqual({ kind: "selection", selections: ["Red", "Green"] });
          // Prompt should list the options for the user
          expect(inputTitle).toContain("1. Red");
          expect(inputTitle).toContain("2. Blue");
          expect(inputTitle).toContain("3. Green");
       });
+
+      test("single-select can collect an optional comment after choosing an option", async () => {
+         const tool = await setupTool();
+         let inputCalls = 0;
+
+         const result = await tool.execute(
+            "tool-call-id",
+            {
+               question: "Pick a color",
+               options: ["Red", "Blue"],
+               allowComment: true,
+            },
+            undefined,
+            undefined,
+            {
+               hasUI: true,
+               ui: {
+                  custom: async () => undefined,
+                  select: async () => "Blue",
+                  input: async () => {
+                     inputCalls += 1;
+                     return "Keep it aligned with the settings screen.";
+                  },
+               },
+            },
+         );
+
+         expect(inputCalls).toBe(1);
+         expect(result.isError).not.toBe(true);
+         expect(result.details.response).toEqual({
+            kind: "selection",
+            selections: ["Blue"],
+            comment: "Keep it aligned with the settings screen.",
+         });
+         expect(result.details.cancelled).toBe(false);
+      });
+
 
       test("returns cancelled when select() returns undefined", async () => {
          const tool = await setupTool();
@@ -788,7 +1063,7 @@ describe("ask_user", () => {
          );
 
          expect(result.details.cancelled).toBe(true);
-         expect(result.details.answer).toBeNull();
+         expect(result.details.response).toBeNull();
       });
 
       test("passes context into the dialog prompt", async () => {

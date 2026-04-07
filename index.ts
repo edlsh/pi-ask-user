@@ -41,22 +41,30 @@ interface AskParams {
    options?: AskOptionInput[];
    allowMultiple?: boolean;
    allowFreeform?: boolean;
+   allowComment?: boolean;
    timeout?: number;
 }
+
+type AskResponse =
+   | {
+      kind: "selection";
+      selections: string[];
+      comment?: string;
+   }
+   | {
+      kind: "freeform";
+      text: string;
+   };
 
 interface AskToolDetails {
    question: string;
    context?: string;
    options: QuestionOption[];
-   answer: string | null;
+   response: AskResponse | null;
    cancelled: boolean;
-   wasCustom?: boolean;
 }
 
-interface AskUIResult {
-   answer: string;
-   wasCustom: boolean;
-}
+type AskUIResult = AskResponse;
 
 function normalizeOptions(options: AskOptionInput[]): QuestionOption[] {
    return options
@@ -79,6 +87,54 @@ function formatOptionsForMessage(options: QuestionOption[]): string {
          return `${index + 1}. ${option.title}${desc}`;
       })
       .join("\n");
+}
+
+function normalizeOptionalComment(text: string | null | undefined): string | undefined {
+   const trimmed = text?.trim();
+   return trimmed ? trimmed : undefined;
+}
+
+function createFreeformResponse(text: string | null | undefined): AskResponse | null {
+   const trimmed = text?.trim();
+   return trimmed ? { kind: "freeform", text: trimmed } : null;
+}
+
+function createSelectionResponse(selections: string[], comment?: string | null): AskResponse | null {
+   const normalizedSelections = selections.map((selection) => selection.trim()).filter(Boolean);
+   if (normalizedSelections.length === 0) return null;
+
+   const normalizedComment = normalizeOptionalComment(comment);
+   return normalizedComment
+      ? { kind: "selection", selections: normalizedSelections, comment: normalizedComment }
+      : { kind: "selection", selections: normalizedSelections };
+}
+
+function formatResponseSummary(response: AskResponse): string {
+   if (response.kind === "freeform") return response.text;
+
+   const selections = response.selections.join(", ");
+   return response.comment ? `${selections} — ${response.comment}` : selections;
+}
+
+function buildCommentPrompt(prompt: string, selections: string[]): string {
+   const label = selections.length === 1 ? "Selected option" : "Selected options";
+   const lines = selections.map((selection) => `- ${selection}`).join("\n");
+   return `${prompt}\n\n${label}:\n${lines}`;
+}
+
+function parseDialogSelections(input: string): string[] {
+   return input
+      .split(",")
+      .map((selection) => selection.trim())
+      .filter(Boolean);
+}
+
+function isCancelledInput(value: unknown): value is null | undefined {
+   return value === null || value === undefined;
+}
+
+function isSelectionResponse(response: AskResponse): response is Extract<AskResponse, { kind: "selection" }> {
+   return response.kind === "selection";
 }
 
 function createSelectListTheme(theme: Theme) {
@@ -167,7 +223,11 @@ function literalHint(theme: Theme, key: string, description: string): string {
    return `${theme.fg("dim", key)}${theme.fg("muted", ` ${description}`)}`;
 }
 
-type AskMode = "select" | "freeform";
+function isCommentToggleKey(data: string): boolean {
+   return matchesKey(data, Key.ctrl("g"));
+}
+
+type AskMode = "select" | "freeform" | "comment";
 
 const ASK_OVERLAY_MAX_HEIGHT_RATIO = 0.85;
 const ASK_OVERLAY_WIDTH = "92%";
@@ -177,26 +237,40 @@ const SINGLE_SELECT_SPLIT_PANE_LEFT_MIN_WIDTH = 32;
 const SINGLE_SELECT_SPLIT_PANE_RIGHT_MIN_WIDTH = 28;
 const SINGLE_SELECT_SPLIT_PANE_SEPARATOR = " │ ";
 const FREEFORM_SENTINEL = "\u270f\ufe0f Type custom response...";
+const COMMENT_TOGGLE_LABEL = "Add extra context after selection";
 
 class MultiSelectList implements Component {
    private options: QuestionOption[];
    private allowFreeform: boolean;
+   private allowComment: boolean;
    private theme: Theme;
    private keybindings: KeybindingsManager;
    private selectedIndex = 0;
    private checked = new Set<number>();
+   private commentEnabled = false;
    private cachedWidth?: number;
    private cachedLines?: string[];
 
    public onCancel?: () => void;
-   public onSubmit?: (result: string) => void;
+   public onSubmit?: (result: string[]) => void;
    public onEnterFreeform?: () => void;
 
-   constructor(options: QuestionOption[], allowFreeform: boolean, theme: Theme, keybindings: KeybindingsManager) {
+   constructor(
+      options: QuestionOption[],
+      allowFreeform: boolean,
+      allowComment: boolean,
+      theme: Theme,
+      keybindings: KeybindingsManager,
+   ) {
       this.options = options;
       this.allowFreeform = allowFreeform;
+      this.allowComment = allowComment;
       this.theme = theme;
       this.keybindings = keybindings;
+   }
+
+   public isCommentEnabled(): boolean {
+      return this.commentEnabled;
    }
 
    invalidate(): void {
@@ -205,17 +279,36 @@ class MultiSelectList implements Component {
    }
 
    private getItemCount(): number {
-      return this.options.length + (this.allowFreeform ? 1 : 0);
+      return this.options.length + (this.allowComment ? 1 : 0) + (this.allowFreeform ? 1 : 0);
+   }
+
+   private getCommentToggleIndex(): number | null {
+      return this.allowComment ? this.options.length : null;
+   }
+
+   private getFreeformIndex(): number {
+      return this.options.length + (this.allowComment ? 1 : 0);
+   }
+
+   private isCommentToggleRow(index: number): boolean {
+      const toggleIndex = this.getCommentToggleIndex();
+      return toggleIndex !== null && index === toggleIndex;
    }
 
    private isFreeformRow(index: number): boolean {
-      return this.allowFreeform && index === this.options.length;
+      return this.allowFreeform && index === this.getFreeformIndex();
    }
 
    private toggle(index: number): void {
       if (index < 0 || index >= this.options.length) return;
       if (this.checked.has(index)) this.checked.delete(index);
       else this.checked.add(index);
+   }
+
+   private toggleComment(): void {
+      if (!this.allowComment) return;
+      this.commentEnabled = !this.commentEnabled;
+      this.invalidate();
    }
 
    handleInput(data: string): void {
@@ -227,6 +320,11 @@ class MultiSelectList implements Component {
       const count = this.getItemCount();
       if (count === 0) {
          this.onCancel?.();
+         return;
+      }
+
+      if (this.allowComment && isCommentToggleKey(data)) {
+         this.toggleComment();
          return;
       }
 
@@ -242,7 +340,6 @@ class MultiSelectList implements Component {
          return;
       }
 
-      // Number keys (1-9) toggle checkboxes for normal items
       const numMatch = data.match(/^[1-9]$/);
       if (numMatch) {
          const idx = Number.parseInt(numMatch[0], 10) - 1;
@@ -255,6 +352,10 @@ class MultiSelectList implements Component {
       }
 
       if (matchesKey(data, Key.space)) {
+         if (this.isCommentToggleRow(this.selectedIndex)) {
+            this.toggleComment();
+            return;
+         }
          if (this.isFreeformRow(this.selectedIndex)) {
             this.onEnterFreeform?.();
             return;
@@ -265,6 +366,10 @@ class MultiSelectList implements Component {
       }
 
       if (this.keybindings.matches(data, "tui.select.confirm")) {
+         if (this.isCommentToggleRow(this.selectedIndex)) {
+            this.toggleComment();
+            return;
+         }
          if (this.isFreeformRow(this.selectedIndex)) {
             this.onEnterFreeform?.();
             return;
@@ -275,11 +380,10 @@ class MultiSelectList implements Component {
             .map((i) => this.options[i]?.title)
             .filter((t): t is string => !!t);
 
-         // If nothing checked, fall back to current row
          const fallback = this.options[this.selectedIndex]?.title;
-         const result = selectedTitles.length > 0 ? selectedTitles.join(", ") : fallback;
+         const result = selectedTitles.length > 0 ? selectedTitles : fallback ? [fallback] : [];
 
-         if (result) this.onSubmit?.(result);
+         if (result.length > 0) this.onSubmit?.(result);
          else this.onCancel?.();
       }
    }
@@ -307,6 +411,15 @@ class MultiSelectList implements Component {
       for (let i = startIndex; i < endIndex; i++) {
          const isSelected = i === this.selectedIndex;
          const prefix = isSelected ? theme.fg("accent", "→") : " ";
+
+         if (this.isCommentToggleRow(i)) {
+            const checkbox = this.commentEnabled ? theme.fg("success", "[✓]") : theme.fg("dim", "[ ]");
+            const label = isSelected
+               ? theme.fg("accent", theme.bold(COMMENT_TOGGLE_LABEL))
+               : theme.fg("text", theme.bold(COMMENT_TOGGLE_LABEL));
+            lines.push(truncateToWidth(`${prefix}   ${checkbox} ${label}`, width, ""));
+            continue;
+         }
 
          if (this.isFreeformRow(i)) {
             const label = theme.fg("text", theme.bold("Type something."));
@@ -338,7 +451,6 @@ class MultiSelectList implements Component {
          }
       }
 
-      // Scroll indicator
       if (startIndex > 0 || endIndex < count) {
          lines.push(theme.fg("dim", truncateToWidth(`  (${this.selectedIndex + 1}/${count})`, width, "")));
       }
@@ -352,10 +464,12 @@ class MultiSelectList implements Component {
 class WrappedSingleSelectList implements Component {
    private options: QuestionOption[];
    private allowFreeform: boolean;
+   private allowComment: boolean;
    private theme: Theme;
    private keybindings: KeybindingsManager;
    private selectedIndex = 0;
    private searchQuery = "";
+   private commentEnabled = false;
    private maxVisibleRows = 12;
    private cachedWidth?: number;
    private cachedLines?: string[];
@@ -364,11 +478,22 @@ class WrappedSingleSelectList implements Component {
    public onSubmit?: (result: string) => void;
    public onEnterFreeform?: () => void;
 
-   constructor(options: QuestionOption[], allowFreeform: boolean, theme: Theme, keybindings: KeybindingsManager) {
+   constructor(
+      options: QuestionOption[],
+      allowFreeform: boolean,
+      allowComment: boolean,
+      theme: Theme,
+      keybindings: KeybindingsManager,
+   ) {
       this.options = options;
       this.allowFreeform = allowFreeform;
+      this.allowComment = allowComment;
       this.theme = theme;
       this.keybindings = keybindings;
+   }
+
+   public isCommentEnabled(): boolean {
+      return this.commentEnabled;
    }
 
    setMaxVisibleRows(rows: number): void {
@@ -389,11 +514,21 @@ class WrappedSingleSelectList implements Component {
    }
 
    private getItemCount(filteredOptions: QuestionOption[]): number {
-      return filteredOptions.length + (this.allowFreeform ? 1 : 0);
+      return filteredOptions.length + (this.allowComment ? 1 : 0) + (this.allowFreeform ? 1 : 0);
+   }
+
+   private isCommentToggleRow(index: number, filteredOptions: QuestionOption[]): boolean {
+      return this.allowComment && index === filteredOptions.length;
    }
 
    private isFreeformRow(index: number, filteredOptions: QuestionOption[]): boolean {
-      return this.allowFreeform && index === filteredOptions.length;
+      return this.allowFreeform && index === filteredOptions.length + (this.allowComment ? 1 : 0);
+   }
+
+   private toggleComment(): void {
+      if (!this.allowComment) return;
+      this.commentEnabled = !this.commentEnabled;
+      this.invalidate();
    }
 
    private setSearchQuery(query: string): void {
@@ -491,6 +626,8 @@ class WrappedSingleSelectList implements Component {
          selectedIndex: this.selectedIndex,
          width,
          allowFreeform: this.allowFreeform,
+         allowComment: this.allowComment,
+         commentEnabled: this.commentEnabled,
          maxRows,
          hideDescriptions,
       });
@@ -508,10 +645,13 @@ class WrappedSingleSelectList implements Component {
          mdTheme = getMarkdownTheme();
       } catch { }
 
-      // Build a markdown string for the preview content
       let md = "";
 
-      if (this.isFreeformRow(this.selectedIndex, filteredOptions)) {
+      if (this.isCommentToggleRow(this.selectedIndex, filteredOptions)) {
+         md += "## Additional context\n\n";
+         md += `Currently: **${this.commentEnabled ? "Enabled" : "Disabled"}**\n\n`;
+         md += "Turn this on when the selected option needs extra explanation before the tool submits.\n";
+      } else if (this.isFreeformRow(this.selectedIndex, filteredOptions)) {
          md += "## Custom response\n\n";
          md += "Open the editor to write **any** answer.\n\n";
          md += "*Use this when none of the listed options fit.*\n";
@@ -536,7 +676,6 @@ class WrappedSingleSelectList implements Component {
          }
       }
 
-      // Render via Markdown component if theme is available, otherwise fall back to plain text
       let lines: string[];
       if (mdTheme) {
          const mdComponent = new Markdown(md.trim(), 0, 0, mdTheme);
@@ -548,7 +687,6 @@ class WrappedSingleSelectList implements Component {
          }
       }
 
-      // Trim trailing blanks
       while (lines.length > 0 && lines[lines.length - 1]?.trim() === "") {
          lines.pop();
       }
@@ -572,6 +710,11 @@ class WrappedSingleSelectList implements Component {
          return;
       }
 
+      if (this.allowComment && isCommentToggleKey(data)) {
+         this.toggleComment();
+         return;
+      }
+
       const filteredOptions = this.getFilteredOptions();
       const count = this.getItemCount(filteredOptions);
 
@@ -588,16 +731,25 @@ class WrappedSingleSelectList implements Component {
       }
 
       const numMatch = data.match(/^[1-9]$/);
-      if (numMatch && count > 0) {
+      if (numMatch && filteredOptions.length > 0) {
          const idx = Number.parseInt(numMatch[0], 10) - 1;
-         if (idx >= 0 && idx < count) {
+         if (idx >= 0 && idx < filteredOptions.length) {
             this.selectedIndex = idx;
             this.invalidate();
             return;
          }
       }
 
+      if (matchesKey(data, Key.space) && count > 0 && this.isCommentToggleRow(this.selectedIndex, filteredOptions)) {
+         this.toggleComment();
+         return;
+      }
+
       if (this.keybindings.matches(data, "tui.select.confirm") && count > 0) {
+         if (this.isCommentToggleRow(this.selectedIndex, filteredOptions)) {
+            this.toggleComment();
+            return;
+         }
          if (this.isFreeformRow(this.selectedIndex, filteredOptions)) {
             this.onEnterFreeform?.();
             return;
@@ -662,12 +814,16 @@ class AskComponent extends Container {
    private options: QuestionOption[];
    private allowMultiple: boolean;
    private allowFreeform: boolean;
+   private allowComment: boolean;
    private tui: TUI;
    private theme: Theme;
    private keybindings: KeybindingsManager;
    private onDone: (result: AskUIResult | null) => void;
 
    private mode: AskMode = "select";
+   private pendingSelections: string[] = [];
+   private freeformDraft = "";
+   private commentDraft = "";
 
    // Static layout components
    private titleText: Text;
@@ -688,7 +844,7 @@ class AskComponent extends Container {
    }
    set focused(value: boolean) {
       this._focused = value;
-      if (this.editor && this.mode === "freeform") {
+      if (this.editor && (this.mode === "freeform" || this.mode === "comment")) {
          (this.editor as any).focused = value;
       }
    }
@@ -699,6 +855,7 @@ class AskComponent extends Container {
       options: QuestionOption[],
       allowMultiple: boolean,
       allowFreeform: boolean,
+      allowComment: boolean,
       tui: TUI,
       theme: Theme,
       keybindings: KeybindingsManager,
@@ -711,6 +868,7 @@ class AskComponent extends Container {
       this.options = options;
       this.allowMultiple = allowMultiple;
       this.allowFreeform = allowFreeform;
+      this.allowComment = allowComment;
       this.tui = tui;
       this.theme = theme;
       this.keybindings = keybindings;
@@ -815,7 +973,8 @@ class AskComponent extends Container {
 
    private updateStaticText(): void {
       const theme = this.theme;
-      this.titleText.setText(theme.fg("accent", theme.bold("Question")));
+      const title = this.mode === "comment" ? "Optional comment" : "Question";
+      this.titleText.setText(theme.fg("accent", theme.bold(title)));
       this.questionText.setText(theme.fg("text", theme.bold(this.question)));
       if (this.contextComponent && this.context) {
          if (this.contextComponent instanceof Markdown) {
@@ -832,12 +991,12 @@ class AskComponent extends Container {
 
    private updateHelpText(): void {
       const theme = this.theme;
-      if (this.mode === "freeform") {
+      if (this.mode === "freeform" || this.mode === "comment") {
          const alternateCancelKeys = this.keybindings
             .getKeys("tui.select.cancel")
             .filter((key) => key !== "escape" && key !== "esc");
          const hints = [
-            keybindingHint(theme, this.keybindings, "tui.input.submit", "submit"),
+            keybindingHint(theme, this.keybindings, "tui.input.submit", this.mode === "comment" ? "submit/skip" : "submit"),
             keybindingHint(theme, this.keybindings, "tui.input.newLine", "newline"),
             literalHint(theme, "esc", "back"),
             alternateCancelKeys.length > 0 ? literalHint(theme, formatKeyList(alternateCancelKeys), "cancel") : null,
@@ -852,9 +1011,12 @@ class AskComponent extends Container {
          const hints = [
             literalHint(theme, "↑↓", "navigate"),
             literalHint(theme, "space", "toggle"),
+            this.allowComment ? literalHint(theme, "ctrl+g", "toggle context") : null,
             keybindingHint(theme, this.keybindings, "tui.select.confirm", "submit"),
             keybindingHint(theme, this.keybindings, "tui.select.cancel", "cancel"),
-         ].join(" • ");
+         ]
+            .filter((hint): hint is string => !!hint)
+            .join(" • ");
          this.helpText.setText(theme.fg("dim", hints));
       } else {
          const alternateCancelKeys = this.keybindings
@@ -864,6 +1026,7 @@ class AskComponent extends Container {
             literalHint(theme, "type", "filter"),
             keybindingHint(theme, this.keybindings, "tui.editor.deleteCharBackward", "erase"),
             literalHint(theme, "↑↓", "navigate"),
+            this.allowComment ? literalHint(theme, "ctrl+g", "toggle context") : null,
             keybindingHint(theme, this.keybindings, "tui.select.confirm", "select"),
             literalHint(theme, "esc", "clear/cancel"),
             alternateCancelKeys.length > 0
@@ -879,8 +1042,14 @@ class AskComponent extends Container {
    private ensureSingleSelectList(): WrappedSingleSelectList {
       if (this.singleSelectList) return this.singleSelectList;
 
-      const list = new WrappedSingleSelectList(this.options, this.allowFreeform, this.theme, this.keybindings);
-      list.onSubmit = (result) => this.onDone({ answer: result, wasCustom: false });
+      const list = new WrappedSingleSelectList(
+         this.options,
+         this.allowFreeform,
+         this.allowComment,
+         this.theme,
+         this.keybindings,
+      );
+      list.onSubmit = (result) => this.handleSelectionSubmit([result], list.isCommentEnabled());
       list.onCancel = () => this.onDone(null);
       list.onEnterFreeform = () => this.showFreeformMode();
 
@@ -891,9 +1060,15 @@ class AskComponent extends Container {
    private ensureMultiSelectList(): MultiSelectList {
       if (this.multiSelectList) return this.multiSelectList;
 
-      const list = new MultiSelectList(this.options, this.allowFreeform, this.theme, this.keybindings);
+      const list = new MultiSelectList(
+         this.options,
+         this.allowFreeform,
+         this.allowComment,
+         this.theme,
+         this.keybindings,
+      );
       list.onCancel = () => this.onDone(null);
-      list.onSubmit = (result) => this.onDone({ answer: result, wasCustom: false });
+      list.onSubmit = (result) => this.handleSelectionSubmit(result, list.isCommentEnabled());
       list.onEnterFreeform = () => this.showFreeformMode();
 
       this.multiSelectList = list;
@@ -905,15 +1080,63 @@ class AskComponent extends Container {
       const editor = new Editor(this.tui, createEditorTheme(this.theme));
       editor.disableSubmit = false;
       editor.onSubmit = (text: string) => {
-         const trimmed = text.trim();
-         this.onDone(trimmed ? { answer: trimmed, wasCustom: true } : null);
+         this.handleEditorSubmit(text);
       };
       this.editor = editor;
       return editor;
    }
 
+   private saveEditorDraft(): void {
+      if (!this.editor) return;
+      const getText = (this.editor as any).getText;
+      if (typeof getText !== "function") return;
+
+      const currentText = String(getText.call(this.editor) ?? "");
+      if (this.mode === "freeform") {
+         this.freeformDraft = currentText;
+      } else if (this.mode === "comment") {
+         this.commentDraft = currentText;
+      }
+   }
+
+   private setEditorText(text: string): void {
+      const editor = this.ensureEditor();
+      const setText = (editor as any).setText;
+      if (typeof setText === "function") {
+         setText.call(editor, text);
+      }
+   }
+
+   private handleSelectionSubmit(selections: string[], wantsComment: boolean): void {
+      if (this.allowComment && wantsComment) {
+         this.pendingSelections = selections;
+         this.commentDraft = "";
+         this.showCommentMode();
+         return;
+      }
+
+      this.onDone(createSelectionResponse(selections));
+   }
+
+   private handleEditorSubmit(text: string): void {
+      if (this.mode === "freeform") {
+         this.onDone(createFreeformResponse(text));
+         return;
+      }
+
+      if (this.mode === "comment") {
+         this.commentDraft = text;
+         this.onDone(createSelectionResponse(this.pendingSelections, text));
+      }
+   }
+
    private showSelectMode(): void {
+      if (this.mode === "freeform" || this.mode === "comment") {
+         this.saveEditorDraft();
+      }
+
       this.mode = "select";
+      this.pendingSelections = [];
       this.modeContainer.clear();
 
       if (this.allowMultiple) {
@@ -928,10 +1151,15 @@ class AskComponent extends Container {
    }
 
    private showFreeformMode(): void {
+      if (this.mode === "comment") {
+         this.saveEditorDraft();
+      }
+
       this.mode = "freeform";
       this.modeContainer.clear();
 
       const editor = this.ensureEditor();
+      this.setEditorText(this.freeformDraft);
       (editor as any).focused = this._focused;
 
       this.modeContainer.addChild(new Text(this.theme.fg("accent", this.theme.bold("Custom response")), 1, 0));
@@ -943,8 +1171,31 @@ class AskComponent extends Container {
       this.tui.requestRender();
    }
 
-   handleInput(data: string): void {
+   private showCommentMode(): void {
       if (this.mode === "freeform") {
+         this.saveEditorDraft();
+      }
+
+      this.mode = "comment";
+      this.modeContainer.clear();
+
+      const editor = this.ensureEditor();
+      this.setEditorText(this.commentDraft);
+      (editor as any).focused = this._focused;
+
+      const selectedLabel = this.pendingSelections.length === 1 ? "Selected option:" : "Selected options:";
+      this.modeContainer.addChild(new Text(this.theme.fg("accent", this.theme.bold(selectedLabel)), 1, 0));
+      this.modeContainer.addChild(new Text(this.theme.fg("text", this.pendingSelections.join(", ")), 1, 0));
+      this.modeContainer.addChild(new Spacer(1));
+      this.modeContainer.addChild(editor);
+
+      this.updateHelpText();
+      this.invalidate();
+      this.tui.requestRender();
+   }
+
+   handleInput(data: string): void {
+      if (this.mode === "freeform" || this.mode === "comment") {
          if (matchesKey(data, Key.escape)) {
             this.showSelectMode();
             return;
@@ -960,7 +1211,6 @@ class AskComponent extends Container {
          return;
       }
 
-      // Selection mode
       if (this.allowMultiple) {
          this.ensureMultiSelectList().handleInput?.(data);
          this.tui.requestRender();
@@ -983,38 +1233,58 @@ async function askViaDialogs(
    options: QuestionOption[],
    allowMultiple: boolean,
    allowFreeform: boolean,
+   allowComment: boolean,
    timeout?: number,
 ): Promise<AskUIResult | null> {
    const dialogOpts = timeout ? { timeout } : undefined;
    const prompt = context ? `${question}\n\nContext:\n${context}` : question;
 
    if (allowMultiple) {
-      // Multi-select degrades to a freeform input with options listed in the prompt.
-      // RPC's select() is single-choice only; input() lets the user type freely.
       const optionList = formatOptionsForMessage(options);
-      const answer = await ui.input(
+      const rawSelections = await ui.input(
          `${prompt}\n\nOptions (select one or more):\n${optionList}`,
          "Type your selection(s)...",
          dialogOpts,
       ) as string | undefined;
-      if (!answer) return null;
-      return { answer: answer.trim(), wasCustom: true };
+      if (isCancelledInput(rawSelections)) return null;
+
+      const selections = parseDialogSelections(rawSelections);
+      if (selections.length === 0) return null;
+
+      if (!allowComment) {
+         return createSelectionResponse(selections);
+      }
+
+      const comment = await ui.input(
+         buildCommentPrompt(prompt, selections),
+         "Optional comment (press Enter to skip)...",
+         dialogOpts,
+      ) as string | undefined;
+      return createSelectionResponse(selections, comment);
    }
 
-   // Single-select: present options via ctx.ui.select()
    const selectOptions = options.map((o) => o.title);
    if (allowFreeform) selectOptions.push(FREEFORM_SENTINEL);
 
    const selected = await ui.select(prompt, selectOptions, dialogOpts) as string | undefined;
-   if (!selected) return null;
+   if (isCancelledInput(selected)) return null;
 
    if (selected === FREEFORM_SENTINEL) {
       const answer = await ui.input(prompt, "Type your answer...", dialogOpts) as string | undefined;
-      if (!answer) return null;
-      return { answer: answer.trim(), wasCustom: true };
+      if (isCancelledInput(answer)) return null;
+      return createFreeformResponse(answer);
    }
 
-   return { answer: selected, wasCustom: false };
+   if (!allowComment) {
+      return createSelectionResponse([selected]);
+   }
+
+   const comment = await ui.input(
+      buildCommentPrompt(prompt, [selected]),
+      "Optional comment (press Enter to skip)...",
+      dialogOpts,
+   ) as string | undefined;
+   return createSelectionResponse([selected], comment);
 }
 
 export default function(pi: ExtensionAPI) {
@@ -1056,6 +1326,9 @@ export default function(pi: ExtensionAPI) {
          allowFreeform: Type.Optional(
             Type.Boolean({ description: "Add a freeform text option. Default: true" }),
          ),
+         allowComment: Type.Optional(
+            Type.Boolean({ description: "Collect an optional comment after selecting one or more options. Default: false" }),
+         ),
          timeout: Type.Optional(
             Type.Number({ description: "Auto-dismiss after N milliseconds. Returns null (cancelled) when expired." }),
          ),
@@ -1065,7 +1338,7 @@ export default function(pi: ExtensionAPI) {
          if (signal?.aborted) {
             return {
                content: [{ type: "text", text: "Cancelled" }],
-               details: { question: params.question, options: [], answer: null, cancelled: true } as AskToolDetails,
+               details: { question: params.question, options: [], response: null, cancelled: true } as AskToolDetails,
             };
          }
 
@@ -1075,6 +1348,7 @@ export default function(pi: ExtensionAPI) {
             options: rawOptions = [],
             allowMultiple = false,
             allowFreeform = true,
+            allowComment = false,
             timeout,
          } = params as AskParams;
          const options = normalizeOptions(rawOptions);
@@ -1083,55 +1357,53 @@ export default function(pi: ExtensionAPI) {
          if (!ctx.hasUI || !ctx.ui) {
             const optionText = options.length > 0 ? `\n\nOptions:\n${formatOptionsForMessage(options)}` : "";
             const freeformHint = allowFreeform ? "\n\nYou can also answer freely." : "";
+            const commentHint = allowComment ? "\n\nAfter choosing an option, you may add an optional comment." : "";
             const contextText = normalizedContext ? `\n\nContext:\n${normalizedContext}` : "";
             return {
                content: [
                   {
                      type: "text",
-                     text: `Ask requires interactive mode. Please answer:\n\n${question}${contextText}${optionText}${freeformHint}`,
+                     text: `Ask requires interactive mode. Please answer:\n\n${question}${contextText}${optionText}${freeformHint}${commentHint}`,
                   },
                ],
                isError: true,
-               details: { question, context: normalizedContext, options, answer: null, cancelled: true } as AskToolDetails,
+               details: { question, context: normalizedContext, options, response: null, cancelled: true } as AskToolDetails,
             };
          }
 
-         // If no options provided, fall back to freeform input prompt.
          if (options.length === 0) {
             const prompt = normalizedContext ? `${question}\n\nContext:\n${normalizedContext}` : question;
             const answer = await ctx.ui.input(prompt, "Type your answer...", timeout ? { timeout } : undefined);
+            const response = createFreeformResponse(answer);
 
-            if (!answer) {
+            if (!response) {
                return {
                   content: [{ type: "text", text: "User cancelled the question" }],
-                  details: { question, context: normalizedContext, options, answer: null, cancelled: true } as AskToolDetails,
+                  details: { question, context: normalizedContext, options, response: null, cancelled: true } as AskToolDetails,
                };
             }
 
-            pi.events.emit("ask:answered", { question, context: normalizedContext, answer, wasCustom: true });
+            pi.events.emit("ask:answered", { question, context: normalizedContext, response });
             return {
-               content: [{ type: "text", text: `User answered: ${answer}` }],
-               details: { question, context: normalizedContext, options, answer, cancelled: false, wasCustom: true } as AskToolDetails,
+               content: [{ type: "text", text: `User answered: ${formatResponseSummary(response)}` }],
+               details: { question, context: normalizedContext, options, response, cancelled: false } as AskToolDetails,
             };
          }
 
          onUpdate?.({
             content: [{ type: "text", text: "Waiting for user input..." }],
-            details: { question, context: normalizedContext, options, answer: null, cancelled: false },
+            details: { question, context: normalizedContext, options, response: null, cancelled: false },
          });
 
          let result: AskUIResult | null;
          try {
-            // custom() returns undefined in RPC/headless mode — fall back to dialog methods
             const customResult = await ctx.ui.custom<AskUIResult | null>(
                (tui, theme, keybindings, done) => {
-                  // Wire AbortSignal so agent cancellation auto-dismisses the overlay
                   if (signal) {
                      const onAbort = () => done(null);
                      signal.addEventListener("abort", onAbort, { once: true });
                   }
 
-                  // Wire timeout for overlay mode
                   if (timeout && timeout > 0) {
                      setTimeout(() => done(null), timeout);
                   }
@@ -1142,6 +1414,7 @@ export default function(pi: ExtensionAPI) {
                      options,
                      allowMultiple,
                      allowFreeform,
+                     allowComment,
                      tui,
                      theme,
                      keybindings,
@@ -1164,7 +1437,7 @@ export default function(pi: ExtensionAPI) {
                result = customResult;
             } else {
                // RPC/headless mode: degrade to select()/input() dialog protocol
-               result = await askViaDialogs(ctx.ui, question, normalizedContext, options, allowMultiple, allowFreeform, timeout);
+               result = await askViaDialogs(ctx.ui, question, normalizedContext, options, allowMultiple, allowFreeform, allowComment, timeout);
             }
          } catch (error) {
             const message =
@@ -1180,25 +1453,23 @@ export default function(pi: ExtensionAPI) {
             pi.events.emit("ask:cancelled", { question, context: normalizedContext, options });
             return {
                content: [{ type: "text", text: "User cancelled the question" }],
-               details: { question, context: normalizedContext, options, answer: null, cancelled: true } as AskToolDetails,
+               details: { question, context: normalizedContext, options, response: null, cancelled: true } as AskToolDetails,
             };
          }
 
          pi.events.emit("ask:answered", {
             question,
             context: normalizedContext,
-            answer: result.answer,
-            wasCustom: result.wasCustom,
+            response: result,
          });
          return {
-            content: [{ type: "text", text: `User answered: ${result.answer}` }],
+            content: [{ type: "text", text: `User answered: ${formatResponseSummary(result)}` }],
             details: {
                question,
                context: normalizedContext,
                options,
-               answer: result.answer,
+               response: result,
                cancelled: false,
-               wasCustom: result.wasCustom,
             } as AskToolDetails,
          };
       },
@@ -1216,6 +1487,9 @@ export default function(pi: ExtensionAPI) {
          }
          if (args.allowMultiple) {
             text += theme.fg("dim", " [multi-select]");
+         }
+         if (args.allowComment) {
+            text += theme.fg("dim", " [optional comment]");
          }
          return new Text(text, 0, 0);
       },
@@ -1236,35 +1510,33 @@ export default function(pi: ExtensionAPI) {
             return new Text(theme.fg("muted", waitingText), 0, 0);
          }
 
-         if (!details || details.cancelled) {
+         if (!details || details.cancelled || !details.response) {
             return new Text(theme.fg("warning", "Cancelled"), 0, 0);
          }
 
-         const answer = details.answer ?? "";
+         const response = details.response;
          let text = theme.fg("success", "✓ ");
-         if (details.wasCustom) {
+         if (response.kind === "freeform") {
             text += theme.fg("muted", "(wrote) ");
          }
-         text += theme.fg("accent", answer);
+         text += theme.fg("accent", formatResponseSummary(response));
 
          if (options.expanded) {
-            const selectedTitles = new Set(
-               answer
-                  .split(",")
-                  .map((value) => value.trim())
-                  .filter(Boolean),
-            );
             text += "\n" + theme.fg("dim", `Q: ${details.question}`);
             if (details.context) {
                text += "\n" + theme.fg("dim", details.context);
             }
-            if (details.options && details.options.length > 0) {
+
+            if (isSelectionResponse(response) && details.options.length > 0) {
+               const selectedTitles = new Set(response.selections);
                text += "\n" + theme.fg("dim", "Options:");
                for (const opt of details.options) {
                   const desc = opt.description ? ` — ${opt.description}` : "";
-                  const isSelected = opt.title === answer || selectedTitles.has(opt.title);
-                  const marker = isSelected ? theme.fg("success", "●") : theme.fg("dim", "○");
+                  const marker = selectedTitles.has(opt.title) ? theme.fg("success", "●") : theme.fg("dim", "○");
                   text += `\n  ${marker} ${theme.fg("dim", opt.title)}${theme.fg("dim", desc)}`;
+               }
+               if (response.comment) {
+                  text += `\n${theme.fg("dim", "Comment:")} ${theme.fg("dim", response.comment)}`;
                }
             }
          }

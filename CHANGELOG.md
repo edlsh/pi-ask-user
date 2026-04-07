@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.6.0](https://github.com/edlsh/pi-ask-user/releases/tag/v0.6.0) - 2026-04-07
+
+### Added
+
+- `allowComment` parameter for collecting optional notes after structured selections, including a user-toggleable overlay row, direct `ctrl+g` keybind, and fallback dialog prompt
+
+### Changed
+
+- `ask_user` result details and emitted `ask:answered` events now use a structured `response` union instead of flattening everything into `answer` / `wasCustom`
+- Expanded result rendering now shows selection comments separately from chosen options
+
+
 ## [0.5.2](https://github.com/edlsh/pi-ask-user/releases/tag/v0.5.2) - 2026-04-06
 
 ### Fixed
