@@ -35,6 +35,8 @@ const ASK_USER_VERSION: string = (_require("./package.json") as { version: strin
 
 type AskOptionInput = QuestionOption | string;
 
+type AskDisplayMode = "overlay" | "inline";
+
 interface AskParams {
    question: string;
    context?: string;
@@ -42,6 +44,7 @@ interface AskParams {
    allowMultiple?: boolean;
    allowFreeform?: boolean;
    allowComment?: boolean;
+   displayMode?: AskDisplayMode;
    timeout?: number;
 }
 
@@ -238,6 +241,23 @@ const SINGLE_SELECT_SPLIT_PANE_RIGHT_MIN_WIDTH = 28;
 const SINGLE_SELECT_SPLIT_PANE_SEPARATOR = " │ ";
 const FREEFORM_SENTINEL = "\u270f\ufe0f Type custom response...";
 const COMMENT_TOGGLE_LABEL = "Add extra context after selection";
+
+function buildCustomUIOptions(displayMode: AskDisplayMode) {
+   if (displayMode === "inline") {
+      return undefined;
+   }
+
+   return {
+      overlay: true,
+      overlayOptions: {
+         anchor: "center" as const,
+         width: ASK_OVERLAY_WIDTH,
+         minWidth: ASK_OVERLAY_MIN_WIDTH,
+         maxHeight: "85%",
+         margin: 1,
+      },
+   };
+}
 
 class MultiSelectList implements Component {
    private options: QuestionOption[];
@@ -1331,6 +1351,14 @@ export default function(pi: ExtensionAPI) {
          allowComment: Type.Optional(
             Type.Boolean({ description: "Collect an optional comment after selecting one or more options. Default: false" }),
          ),
+         displayMode: Type.Optional(
+            Type.Union([
+               Type.Literal("overlay"),
+               Type.Literal("inline"),
+            ], {
+               description: "UI rendering mode. 'overlay' shows a centered modal, 'inline' renders in-place. Default: overlay",
+            }),
+         ),
          timeout: Type.Optional(
             Type.Number({ description: "Auto-dismiss after N milliseconds. Returns null (cancelled) when expired." }),
          ),
@@ -1351,8 +1379,13 @@ export default function(pi: ExtensionAPI) {
             allowMultiple = false,
             allowFreeform = true,
             allowComment = false,
+            displayMode,
             timeout,
          } = params as AskParams;
+         const envMode = process.env.PI_ASK_USER_DISPLAY_MODE;
+         const envDisplayMode: AskDisplayMode | undefined =
+            envMode === "overlay" || envMode === "inline" ? envMode : undefined;
+         const effectiveDisplayMode: AskDisplayMode = displayMode ?? envDisplayMode ?? "overlay";
          const options = normalizeOptions(rawOptions);
          const normalizedContext = context?.trim() || undefined;
 
@@ -1399,41 +1432,34 @@ export default function(pi: ExtensionAPI) {
 
          let result: AskUIResult | null;
          try {
-            const customResult = await ctx.ui.custom<AskUIResult | null>(
-               (tui, theme, keybindings, done) => {
-                  if (signal) {
-                     const onAbort = () => done(null);
-                     signal.addEventListener("abort", onAbort, { once: true });
-                  }
+            const customFactory = (tui, theme, keybindings, done) => {
+               if (signal) {
+                  const onAbort = () => done(null);
+                  signal.addEventListener("abort", onAbort, { once: true });
+               }
 
-                  if (timeout && timeout > 0) {
-                     setTimeout(() => done(null), timeout);
-                  }
+               if (timeout && timeout > 0) {
+                  setTimeout(() => done(null), timeout);
+               }
 
-                  return new AskComponent(
-                     question,
-                     normalizedContext,
-                     options,
-                     allowMultiple,
-                     allowFreeform,
-                     allowComment,
-                     tui,
-                     theme,
-                     keybindings,
-                     done,
-                  );
-               },
-               {
-                  overlay: true,
-                  overlayOptions: {
-                     anchor: "center",
-                     width: ASK_OVERLAY_WIDTH,
-                     minWidth: ASK_OVERLAY_MIN_WIDTH,
-                     maxHeight: "85%",
-                     margin: 1,
-                  },
-               },
-            );
+               return new AskComponent(
+                  question,
+                  normalizedContext,
+                  options,
+                  allowMultiple,
+                  allowFreeform,
+                  allowComment,
+                  tui,
+                  theme,
+                  keybindings,
+                  done,
+               );
+            };
+
+            const customOptions = buildCustomUIOptions(effectiveDisplayMode);
+            const customResult = customOptions
+               ? await ctx.ui.custom<AskUIResult | null>(customFactory, customOptions)
+               : await ctx.ui.custom<AskUIResult | null>(customFactory);
 
             if (customResult !== undefined) {
                result = customResult;

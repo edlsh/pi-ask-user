@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, mock, test } from "bun:test";
+import { beforeAll, describe, expect, mock, onTestFinished, test } from "bun:test";
 
 let editorInputs: string[] = [];
 let editorText = "";
@@ -113,6 +113,7 @@ beforeAll(() => {
          Optional: (value: unknown) => value,
          Array: (value: unknown) => value,
          Union: (value: unknown) => value,
+         Literal: (value: unknown) => value,
          Boolean: (value?: unknown) => value,
          Number: (value?: unknown) => value,
       },
@@ -123,6 +124,18 @@ type RegisteredTool = {
    execute: (...args: any[]) => Promise<any>;
    renderResult: (result: any, options: any, theme: any) => any;
 };
+
+function stubEnv(key: string, value: string): void {
+   const original = process.env[key];
+   process.env[key] = value;
+   onTestFinished(() => {
+      if (original === undefined) {
+         delete process.env[key];
+      } else {
+         process.env[key] = original;
+      }
+   });
+}
 
 async function setupTool(): Promise<RegisteredTool> {
    const { default: askUserExtension } = await import("./index");
@@ -156,7 +169,7 @@ function createTheme() {
 }
 
 describe("ask_user", () => {
-   test("does not hide the overlay on narrow terminals", async () => {
+   test("uses overlay mode by default", async () => {
       const tool = await setupTool();
       let capturedOptions: any;
 
@@ -181,6 +194,149 @@ describe("ask_user", () => {
 
       expect(capturedOptions.overlay).toBe(true);
       expect(capturedOptions.overlayOptions.visible).toBeUndefined();
+   });
+
+   test("uses non-overlay custom UI when displayMode is inline", async () => {
+      const tool = await setupTool();
+      let capturedOptions: any;
+
+      const result = await tool.execute(
+         "tool-call-id",
+         {
+            question: "Which option should we use?",
+            options: ["A", "B"],
+            displayMode: "inline",
+         },
+         undefined,
+         undefined,
+         {
+            hasUI: true,
+            ui: {
+               custom: async (_factory: any, options: any) => {
+                  capturedOptions = options;
+                  return null;
+               },
+            },
+         },
+      );
+
+      expect(capturedOptions).toBeUndefined();
+      expect(result.details.cancelled).toBe(true);
+   });
+
+   test("inline mode still respects timeout cancellation", async () => {
+      const tool = await setupTool();
+
+      const result = await tool.execute(
+         "tool-call-id",
+         {
+            question: "Which option should we use?",
+            options: ["A", "B"],
+            displayMode: "inline",
+            timeout: 5,
+         },
+         undefined,
+         undefined,
+         {
+            hasUI: true,
+            ui: {
+               custom: async (factory: any) =>
+                  await new Promise((resolve) => {
+                     factory(
+                        { requestRender() { }, terminal: { rows: 24 } },
+                        createTheme(),
+                        createKeybindings(),
+                        resolve,
+                     );
+                  }),
+            },
+         },
+      );
+
+      expect(result.details.cancelled).toBe(true);
+      expect(result.details.response).toBeNull();
+   });
+
+   test("uses PI_ASK_USER_DISPLAY_MODE env var when call-level displayMode is omitted", async () => {
+      stubEnv("PI_ASK_USER_DISPLAY_MODE", "inline");
+      const tool = await setupTool();
+      let capturedOptions: any;
+
+      await tool.execute(
+         "tool-call-id",
+         {
+            question: "Which option should we use?",
+            options: ["A", "B"],
+         },
+         undefined,
+         undefined,
+         {
+            hasUI: true,
+            ui: {
+               custom: async (_factory: any, options: any) => {
+                  capturedOptions = options;
+                  return null;
+               },
+            },
+         },
+      );
+
+      expect(capturedOptions).toBeUndefined();
+   });
+
+   test("call-level displayMode overrides PI_ASK_USER_DISPLAY_MODE env var", async () => {
+      stubEnv("PI_ASK_USER_DISPLAY_MODE", "inline");
+      const tool = await setupTool();
+      let capturedOptions: any;
+
+      await tool.execute(
+         "tool-call-id",
+         {
+            question: "Which option should we use?",
+            options: ["A", "B"],
+            displayMode: "overlay",
+         },
+         undefined,
+         undefined,
+         {
+            hasUI: true,
+            ui: {
+               custom: async (_factory: any, options: any) => {
+                  capturedOptions = options;
+                  return null;
+               },
+            },
+         },
+      );
+
+      expect(capturedOptions.overlay).toBe(true);
+   });
+
+   test("ignores unrecognised PI_ASK_USER_DISPLAY_MODE value and falls back to overlay", async () => {
+      stubEnv("PI_ASK_USER_DISPLAY_MODE", "fullscreen");
+      const tool = await setupTool();
+      let capturedOptions: any;
+
+      await tool.execute(
+         "tool-call-id",
+         {
+            question: "Which option should we use?",
+            options: ["A", "B"],
+         },
+         undefined,
+         undefined,
+         {
+            hasUI: true,
+            ui: {
+               custom: async (_factory: any, options: any) => {
+                  capturedOptions = options;
+                  return null;
+               },
+            },
+         },
+      );
+
+      expect(capturedOptions.overlay).toBe(true);
    });
 
    test("renders partial updates as waiting state instead of a successful empty answer", async () => {
