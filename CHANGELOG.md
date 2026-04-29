@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- `displayMode` parameter on `ask_user` (`"overlay"` | `"inline"`) controlling whether the custom UI renders as a centered modal or in the conversation flow
+- `PI_ASK_USER_DISPLAY_MODE` environment variable for setting a personal default display mode; per-call `displayMode` always wins over the env var, which always wins over the built-in `"overlay"` fallback
+- Skill guidance documenting when to override `displayMode` per call vs. respect the user's env-var preference
+
+### Changed
+
+- Tool schema now uses a flat `{ type: "string", enum: [...] }` JSON Schema for `displayMode` (Google function-calling compatible) via a small local helper rather than `Type.Union([Type.Literal()])`
+
 ## [0.6.1](https://github.com/edlsh/pi-ask-user/releases/tag/v0.6.1) - 2026-04-07
 
 ### Changed

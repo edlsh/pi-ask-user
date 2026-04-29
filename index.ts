@@ -7,8 +7,7 @@
 
 import type { ExtensionAPI, Theme } from "@mariozechner/pi-coding-agent";
 import { getMarkdownTheme } from "@mariozechner/pi-coding-agent";
-import { StringEnum } from "@mariozechner/pi-ai";
-import { Type } from "@sinclair/typebox";
+import { Type, type TUnsafe } from "@sinclair/typebox";
 import {
    Container,
    type Component,
@@ -33,6 +32,24 @@ import { renderSingleSelectRows } from "./single-select-layout";
 import { createRequire } from "node:module";
 const _require = createRequire(import.meta.url);
 const ASK_USER_VERSION: string = (_require("./package.json") as { version: string }).version;
+
+/**
+ * Emit a flat `{ type: "string", enum: [...] }` JSON Schema instead of the
+ * `anyOf`/`oneOf` shape that `Type.Union([Type.Literal()])` produces. Google's
+ * function-calling API rejects the union form. Local copy of pi-ai's StringEnum
+ * to avoid a peer dependency for one helper.
+ */
+function StringEnum<const T extends readonly string[]>(
+   values: T,
+   options?: { description?: string; default?: T[number] },
+): TUnsafe<T[number]> {
+   return Type.Unsafe<T[number]>({
+      type: "string",
+      enum: [...values],
+      ...(options?.description ? { description: options.description } : {}),
+      ...(options?.default !== undefined ? { default: options.default } : {}),
+   });
+}
 
 type AskOptionInput = QuestionOption | string;
 
@@ -244,20 +261,35 @@ const FREEFORM_SENTINEL = "\u270f\ufe0f Type custom response...";
 const COMMENT_TOGGLE_LABEL = "Add extra context after selection";
 
 function buildCustomUIOptions(displayMode: AskDisplayMode) {
-   if (displayMode === "inline") {
-      return undefined;
+   switch (displayMode) {
+      case "inline":
+         return undefined;
+      case "overlay":
+         return {
+            overlay: true,
+            overlayOptions: {
+               anchor: "center" as const,
+               width: ASK_OVERLAY_WIDTH,
+               minWidth: ASK_OVERLAY_MIN_WIDTH,
+               maxHeight: "85%",
+               margin: 1,
+            },
+         };
+      default: {
+         const _exhaustive: never = displayMode;
+         void _exhaustive;
+         return {
+            overlay: true,
+            overlayOptions: {
+               anchor: "center" as const,
+               width: ASK_OVERLAY_WIDTH,
+               minWidth: ASK_OVERLAY_MIN_WIDTH,
+               maxHeight: "85%",
+               margin: 1,
+            },
+         };
+      }
    }
-
-   return {
-      overlay: true,
-      overlayOptions: {
-         anchor: "center" as const,
-         width: ASK_OVERLAY_WIDTH,
-         minWidth: ASK_OVERLAY_MIN_WIDTH,
-         maxHeight: "85%",
-         margin: 1,
-      },
-   };
 }
 
 class MultiSelectList implements Component {
@@ -1354,7 +1386,7 @@ export default function(pi: ExtensionAPI) {
          ),
          displayMode: Type.Optional(
             StringEnum(["overlay", "inline"] as const, {
-               description: "UI rendering mode. 'overlay' shows a centered modal, 'inline' renders in-place. Default: overlay",
+               description: "UI rendering mode. 'overlay' shows a centered modal, 'inline' renders in-place. Default: PI_ASK_USER_DISPLAY_MODE env var if set, otherwise 'overlay'. Omit to respect the user's configured preference.",
             }),
          ),
          timeout: Type.Optional(

@@ -116,6 +116,7 @@ beforeAll(() => {
          Literal: (value: unknown) => value,
          Boolean: (value?: unknown) => value,
          Number: (value?: unknown) => value,
+         Unsafe: (value: unknown) => value,
       },
    }));
 });
@@ -222,6 +223,39 @@ describe("ask_user", () => {
 
       expect(capturedOptions).toBeUndefined();
       expect(result.details.cancelled).toBe(true);
+   });
+
+   test("inline mode resolves with the user's selection", async () => {
+      const tool = await setupTool();
+
+      const result = await tool.execute(
+         "tool-call-id",
+         {
+            question: "Which option should we use?",
+            options: ["A", "B"],
+            displayMode: "inline",
+         },
+         undefined,
+         undefined,
+         {
+            hasUI: true,
+            ui: {
+               custom: async (factory: any) =>
+                  await new Promise((resolve) => {
+                     factory(
+                        { requestRender() { }, terminal: { rows: 24 } },
+                        createTheme(),
+                        createKeybindings(),
+                        resolve,
+                     );
+                     resolve({ kind: "selection", selections: ["A"] });
+                  }),
+            },
+         },
+      );
+
+      expect(result.details.cancelled).toBe(false);
+      expect(result.details.response).toEqual({ kind: "selection", selections: ["A"] });
    });
 
    test("inline mode still respects timeout cancellation", async () => {
