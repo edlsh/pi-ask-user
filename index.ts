@@ -7,7 +7,7 @@
 
 import type { ExtensionAPI, Theme } from "@mariozechner/pi-coding-agent";
 import { getMarkdownTheme } from "@mariozechner/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
+import { Type, type TUnsafe } from "@sinclair/typebox";
 import {
    Container,
    type Component,
@@ -33,7 +33,27 @@ import { createRequire } from "node:module";
 const _require = createRequire(import.meta.url);
 const ASK_USER_VERSION: string = (_require("./package.json") as { version: string }).version;
 
+/**
+ * Emit a flat `{ type: "string", enum: [...] }` JSON Schema instead of the
+ * `anyOf`/`oneOf` shape that `Type.Union([Type.Literal()])` produces. Google's
+ * function-calling API rejects the union form. Local copy of pi-ai's StringEnum
+ * to avoid a peer dependency for one helper.
+ */
+function StringEnum<const T extends readonly string[]>(
+   values: T,
+   options?: { description?: string; default?: T[number] },
+): TUnsafe<T[number]> {
+   return Type.Unsafe<T[number]>({
+      type: "string",
+      enum: [...values],
+      ...(options?.description ? { description: options.description } : {}),
+      ...(options?.default !== undefined ? { default: options.default } : {}),
+   });
+}
+
 type AskOptionInput = QuestionOption | string;
+
+type AskDisplayMode = "overlay" | "inline";
 
 interface AskParams {
    question: string;
@@ -42,6 +62,7 @@ interface AskParams {
    allowMultiple?: boolean;
    allowFreeform?: boolean;
    allowComment?: boolean;
+   displayMode?: AskDisplayMode;
    timeout?: number;
 }
 
@@ -238,6 +259,38 @@ const SINGLE_SELECT_SPLIT_PANE_RIGHT_MIN_WIDTH = 28;
 const SINGLE_SELECT_SPLIT_PANE_SEPARATOR = " │ ";
 const FREEFORM_SENTINEL = "\u270f\ufe0f Type custom response...";
 const COMMENT_TOGGLE_LABEL = "Add extra context after selection";
+
+function buildCustomUIOptions(displayMode: AskDisplayMode) {
+   switch (displayMode) {
+      case "inline":
+         return undefined;
+      case "overlay":
+         return {
+            overlay: true,
+            overlayOptions: {
+               anchor: "center" as const,
+               width: ASK_OVERLAY_WIDTH,
+               minWidth: ASK_OVERLAY_MIN_WIDTH,
+               maxHeight: "85%",
+               margin: 1,
+            },
+         };
+      default: {
+         const _exhaustive: never = displayMode;
+         void _exhaustive;
+         return {
+            overlay: true,
+            overlayOptions: {
+               anchor: "center" as const,
+               width: ASK_OVERLAY_WIDTH,
+               minWidth: ASK_OVERLAY_MIN_WIDTH,
+               maxHeight: "85%",
+               margin: 1,
+            },
+         };
+      }
+   }
+}
 
 class MultiSelectList implements Component {
    private options: QuestionOption[];
@@ -1331,6 +1384,11 @@ export default function(pi: ExtensionAPI) {
          allowComment: Type.Optional(
             Type.Boolean({ description: "Collect an optional comment after selecting one or more options. Default: false" }),
          ),
+         displayMode: Type.Optional(
+            StringEnum(["overlay", "inline"] as const, {
+               description: "UI rendering mode. 'overlay' shows a centered modal, 'inline' renders in-place. Default: PI_ASK_USER_DISPLAY_MODE env var if set, otherwise 'overlay'. Omit to respect the user's configured preference.",
+            }),
+         ),
          timeout: Type.Optional(
             Type.Number({ description: "Auto-dismiss after N milliseconds. Returns null (cancelled) when expired." }),
          ),
@@ -1351,8 +1409,13 @@ export default function(pi: ExtensionAPI) {
             allowMultiple = false,
             allowFreeform = true,
             allowComment = false,
+            displayMode,
             timeout,
          } = params as AskParams;
+         const envMode = process.env.PI_ASK_USER_DISPLAY_MODE;
+         const envDisplayMode: AskDisplayMode | undefined =
+            envMode === "overlay" || envMode === "inline" ? envMode : undefined;
+         const effectiveDisplayMode: AskDisplayMode = displayMode ?? envDisplayMode ?? "overlay";
          const options = normalizeOptions(rawOptions);
          const normalizedContext = context?.trim() || undefined;
 
@@ -1399,41 +1462,31 @@ export default function(pi: ExtensionAPI) {
 
          let result: AskUIResult | null;
          try {
-            const customResult = await ctx.ui.custom<AskUIResult | null>(
-               (tui, theme, keybindings, done) => {
-                  if (signal) {
-                     const onAbort = () => done(null);
-                     signal.addEventListener("abort", onAbort, { once: true });
-                  }
+            const customFactory = (tui: TUI, theme: Theme, keybindings: KeybindingsManager, done: (result: AskUIResult | null) => void) => {
+               if (signal) {
+                  const onAbort = () => done(null);
+                  signal.addEventListener("abort", onAbort, { once: true });
+               }
 
-                  if (timeout && timeout > 0) {
-                     setTimeout(() => done(null), timeout);
-                  }
+               if (timeout && timeout > 0) {
+                  setTimeout(() => done(null), timeout);
+               }
 
-                  return new AskComponent(
-                     question,
-                     normalizedContext,
-                     options,
-                     allowMultiple,
-                     allowFreeform,
-                     allowComment,
-                     tui,
-                     theme,
-                     keybindings,
-                     done,
-                  );
-               },
-               {
-                  overlay: true,
-                  overlayOptions: {
-                     anchor: "center",
-                     width: ASK_OVERLAY_WIDTH,
-                     minWidth: ASK_OVERLAY_MIN_WIDTH,
-                     maxHeight: "85%",
-                     margin: 1,
-                  },
-               },
-            );
+               return new AskComponent(
+                  question,
+                  normalizedContext,
+                  options,
+                  allowMultiple,
+                  allowFreeform,
+                  allowComment,
+                  tui,
+                  theme,
+                  keybindings,
+                  done,
+               );
+            };
+
+            const customResult = await ctx.ui.custom<AskUIResult | null>(customFactory, buildCustomUIOptions(effectiveDisplayMode));
 
             if (customResult !== undefined) {
                result = customResult;

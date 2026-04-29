@@ -16,7 +16,7 @@ High-quality video: [ask-user-demo.mp4](./media/ask-user-demo.mp4)
 - Optional freeform responses
 - User-toggleable extra context on structured selections
 - Context display support
-- Overlay mode — dialog floats over conversation, preserving context
+- Configurable display mode: `overlay` (modal, default) or `inline` (rendered directly in the flow)
 - Pi-TUI-aligned keybinding and editor behavior
 - Custom TUI rendering for tool calls and results
 - System prompt integration via `promptSnippet` and `promptGuidelines`
@@ -63,7 +63,8 @@ The registered tool name is:
 | `options` | `(string \| {title, description?})[]?` | `[]` | Multiple-choice options |
 | `allowMultiple` | `boolean?` | `false` | Enable multi-select mode |
 | `allowFreeform` | `boolean?` | `true` | Add a "Type something" freeform option |
-| `allowComment` | `boolean?` | `false` | Expose a user-toggleable extra-context option in the overlay (`ctrl+g` or the toggle row) and collect an optional comment in fallback dialogs |
+| `allowComment` | `boolean?` | `false` | Expose a user-toggleable extra-context option in the custom UI (`ctrl+g` or the toggle row) and collect an optional comment in fallback dialogs |
+| `displayMode` | `"overlay" \| "inline"?` | env var or `"overlay"` | Controls custom UI rendering: `overlay` shows the centered modal (current behavior), `inline` renders without overlay framing |
 | `timeout` | `number?` | — | Auto-dismiss after N ms and return `null` if the prompt times out |
 
 ## Example usage shape
@@ -78,9 +79,28 @@ The registered tool name is:
   ],
   "allowMultiple": false,
   "allowFreeform": true,
-  "allowComment": true
+  "allowComment": true,
+  "displayMode": "inline"
 }
 ```
+
+`displayMode: "inline"` uses the same interaction logic but skips overlay mode when calling `ctx.ui.custom(...)`. RPC/headless fallback behavior is unchanged.
+
+## Personal display mode preference
+
+Set the `PI_ASK_USER_DISPLAY_MODE` environment variable to configure your preferred default globally. Add it to your shell profile (`~/.zshrc`, `~/.bash_profile`, etc.):
+
+```bash
+export PI_ASK_USER_DISPLAY_MODE=inline
+```
+
+Effective behavior order:
+
+1. Per-call `displayMode` parameter (if provided)
+2. `PI_ASK_USER_DISPLAY_MODE` environment variable (if set to `"overlay"` or `"inline"`)
+3. Fallback default: `"overlay"`
+
+Unrecognised values are silently ignored and fall back to `"overlay"`.
 
 ## Result details
 
