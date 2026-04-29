@@ -7,6 +7,7 @@
 
 import type { ExtensionAPI, Theme } from "@mariozechner/pi-coding-agent";
 import { getMarkdownTheme } from "@mariozechner/pi-coding-agent";
+import { StringEnum } from "@mariozechner/pi-ai";
 import { Type } from "@sinclair/typebox";
 import {
    Container,
@@ -1352,10 +1353,7 @@ export default function(pi: ExtensionAPI) {
             Type.Boolean({ description: "Collect an optional comment after selecting one or more options. Default: false" }),
          ),
          displayMode: Type.Optional(
-            Type.Union([
-               Type.Literal("overlay"),
-               Type.Literal("inline"),
-            ], {
+            StringEnum(["overlay", "inline"] as const, {
                description: "UI rendering mode. 'overlay' shows a centered modal, 'inline' renders in-place. Default: overlay",
             }),
          ),
@@ -1432,7 +1430,7 @@ export default function(pi: ExtensionAPI) {
 
          let result: AskUIResult | null;
          try {
-            const customFactory = (tui, theme, keybindings, done) => {
+            const customFactory = (tui: TUI, theme: Theme, keybindings: KeybindingsManager, done: (result: AskUIResult | null) => void) => {
                if (signal) {
                   const onAbort = () => done(null);
                   signal.addEventListener("abort", onAbort, { once: true });
@@ -1456,10 +1454,7 @@ export default function(pi: ExtensionAPI) {
                );
             };
 
-            const customOptions = buildCustomUIOptions(effectiveDisplayMode);
-            const customResult = customOptions
-               ? await ctx.ui.custom<AskUIResult | null>(customFactory, customOptions)
-               : await ctx.ui.custom<AskUIResult | null>(customFactory);
+            const customResult = await ctx.ui.custom<AskUIResult | null>(customFactory, buildCustomUIOptions(effectiveDisplayMode));
 
             if (customResult !== undefined) {
                result = customResult;
