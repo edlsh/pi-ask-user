@@ -89,6 +89,7 @@ beforeAll(() => {
          space: "space",
          backspace: "backspace",
          ctrl: (key: string) => `ctrl+${key}`,
+         alt: (key: string) => `alt+${key}`,
          shift: (key: string) => `shift+${key}`,
          tab: "tab",
       },
@@ -373,7 +374,7 @@ describe("ask_user", () => {
       expect(capturedOptions.overlay).toBe(true);
    });
 
-   describe("overlay hide/show toggle (ctrl+o)", () => {
+   describe("overlay hide/show toggle (alt+o)", () => {
       function createOverlayHandle() {
          let hidden = false;
          const calls: boolean[] = [];
@@ -455,7 +456,7 @@ describe("ask_user", () => {
          expect(registered).toBe(false);
       });
 
-      test("ctrl+o toggles overlay visibility via OverlayHandle.setHidden", async () => {
+      test("alt+o toggles overlay visibility via OverlayHandle.setHidden", async () => {
          const tool = await setupTool();
          const { handle, calls } = createOverlayHandle();
          let inputHandler: ((data: string) => any) | undefined;
@@ -471,9 +472,9 @@ describe("ask_user", () => {
                ui: {
                   custom: async (_factory: any, options: any) => {
                      options.onHandle?.(handle);
-                     // Simulate the user pressing ctrl+o twice while the overlay is shown.
-                     const firstResult = inputHandler?.("ctrl+o");
-                     const secondResult = inputHandler?.("ctrl+o");
+                     // Simulate the user pressing alt+o twice while the overlay is shown.
+                     const firstResult = inputHandler?.("alt+o");
+                     const secondResult = inputHandler?.("alt+o");
                      expect(firstResult).toEqual({ consume: true });
                      expect(secondResult).toEqual({ consume: true });
                      return null;
@@ -491,11 +492,11 @@ describe("ask_user", () => {
 
          expect(calls).toEqual([true, false]);
          expect(notifications).toHaveLength(1);
-         expect(notifications[0]?.message).toContain("ctrl+o");
+         expect(notifications[0]?.message).toContain("alt+o");
          expect(notifications[0]?.type).toBe("info");
       });
 
-      test("ignores non-ctrl+o input from the terminal listener", async () => {
+      test("does not consume ctrl+o from the terminal listener", async () => {
          const tool = await setupTool();
          const { handle, calls } = createOverlayHandle();
          let inputHandler: ((data: string) => any) | undefined;
@@ -510,7 +511,7 @@ describe("ask_user", () => {
                ui: {
                   custom: async (_factory: any, options: any) => {
                      options.onHandle?.(handle);
-                     const result = inputHandler?.("a");
+                     const result = inputHandler?.("ctrl+o");
                      expect(result).toBeUndefined();
                      return null;
                   },
@@ -526,7 +527,7 @@ describe("ask_user", () => {
          expect(calls).toEqual([]);
       });
 
-      test("restores a hidden overlay on completion", async () => {
+      test("does not force a hidden overlay visible during cleanup", async () => {
          const tool = await setupTool();
          const { handle, calls } = createOverlayHandle();
          let inputHandler: ((data: string) => any) | undefined;
@@ -542,7 +543,7 @@ describe("ask_user", () => {
                   custom: async (_factory: any, options: any) => {
                      options.onHandle?.(handle);
                      // Hide and resolve while still hidden.
-                     inputHandler?.("ctrl+o");
+                     inputHandler?.("alt+o");
                      return null;
                   },
                   onTerminalInput: (handler: (data: string) => any) => {
@@ -554,8 +555,7 @@ describe("ask_user", () => {
             },
          );
 
-         // setHidden(true) from ctrl+o, then setHidden(false) from the finally block.
-         expect(calls).toEqual([true, false]);
+         expect(calls).toEqual([true]);
       });
    });
 
@@ -951,6 +951,7 @@ describe("ask_user", () => {
       );
 
       expect(result.isError).not.toBe(true);
+      expect(helpText).toContain("alt+o hide");
       expect(helpText).toContain("q cancel");
       expect(helpText).not.toContain("ctrl+c cancel");
    });

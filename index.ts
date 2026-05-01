@@ -250,7 +250,7 @@ function isCommentToggleKey(data: string): boolean {
 }
 
 function isOverlayHideToggleKey(data: string): boolean {
-   return matchesKey(data, Key.ctrl("o"));
+   return matchesKey(data, Key.alt("o"));
 }
 
 type AskMode = "select" | "freeform" | "comment";
@@ -264,6 +264,7 @@ const SINGLE_SELECT_SPLIT_PANE_RIGHT_MIN_WIDTH = 28;
 const SINGLE_SELECT_SPLIT_PANE_SEPARATOR = " │ ";
 const FREEFORM_SENTINEL = "\u270f\ufe0f Type custom response...";
 const COMMENT_TOGGLE_LABEL = "Add extra context after selection";
+const OVERLAY_HIDE_TOGGLE_LABEL = "alt+o";
 
 function buildCustomUIOptions(
    displayMode: AskDisplayMode,
@@ -1058,7 +1059,7 @@ class AskComponent extends Container {
    private updateHelpText(): void {
       const theme = this.theme;
       const overlayHint = this.displayMode === "overlay"
-         ? literalHint(theme, "ctrl+o", "hide")
+         ? literalHint(theme, OVERLAY_HIDE_TOGGLE_LABEL, "hide")
          : null;
       if (this.mode === "freeform" || this.mode === "comment") {
          const alternateCancelKeys = this.keybindings
@@ -1509,7 +1510,7 @@ export default function(pi: ExtensionAPI) {
                );
             };
 
-            // Register a raw terminal input listener for ctrl+o so the overlay can be
+            // Register a raw terminal input listener for alt+o so the overlay can be
             // toggled even while it is hidden (hidden overlays do not receive input).
             // Inline mode does not need this because the prompt is already non-modal.
             if (effectiveDisplayMode === "overlay" && typeof ctx.ui.onTerminalInput === "function") {
@@ -1519,7 +1520,7 @@ export default function(pi: ExtensionAPI) {
                   overlayHandle.setHidden(nextHidden);
                   if (nextHidden && !hasAnnouncedHide) {
                      hasAnnouncedHide = true;
-                     ctx.ui.notify?.("ask_user hidden — press ctrl+o to reopen", "info");
+                     ctx.ui.notify?.(`ask_user hidden — press ${OVERLAY_HIDE_TOGGLE_LABEL} to reopen`, "info");
                   }
                   return { consume: true };
                });
@@ -1547,9 +1548,6 @@ export default function(pi: ExtensionAPI) {
                details: { error: message },
             };
          } finally {
-            if (overlayHandle?.isHidden()) {
-               overlayHandle.setHidden(false);
-            }
             removeOverlayInputListener?.();
          }
 
