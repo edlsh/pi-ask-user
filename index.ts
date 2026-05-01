@@ -21,6 +21,7 @@ import {
    Markdown,
    type MarkdownTheme,
    matchesKey,
+   type OverlayHandle,
    Spacer,
    Text,
    type TUI,
@@ -248,6 +249,10 @@ function isCommentToggleKey(data: string): boolean {
    return matchesKey(data, Key.ctrl("g"));
 }
 
+function isOverlayHideToggleKey(data: string): boolean {
+   return matchesKey(data, Key.alt("o"));
+}
+
 type AskMode = "select" | "freeform" | "comment";
 
 const ASK_OVERLAY_MAX_HEIGHT_RATIO = 0.85;
@@ -259,8 +264,12 @@ const SINGLE_SELECT_SPLIT_PANE_RIGHT_MIN_WIDTH = 28;
 const SINGLE_SELECT_SPLIT_PANE_SEPARATOR = " │ ";
 const FREEFORM_SENTINEL = "\u270f\ufe0f Type custom response...";
 const COMMENT_TOGGLE_LABEL = "Add extra context after selection";
+const OVERLAY_HIDE_TOGGLE_LABEL = "alt+o";
 
-function buildCustomUIOptions(displayMode: AskDisplayMode) {
+function buildCustomUIOptions(
+   displayMode: AskDisplayMode,
+   onHandle?: (handle: OverlayHandle) => void,
+) {
    switch (displayMode) {
       case "inline":
          return undefined;
@@ -274,6 +283,7 @@ function buildCustomUIOptions(displayMode: AskDisplayMode) {
                maxHeight: "85%",
                margin: 1,
             },
+            ...(onHandle ? { onHandle } : {}),
          };
       default: {
          const _exhaustive: never = displayMode;
@@ -287,6 +297,7 @@ function buildCustomUIOptions(displayMode: AskDisplayMode) {
                maxHeight: "85%",
                margin: 1,
             },
+            ...(onHandle ? { onHandle } : {}),
          };
       }
    }
@@ -868,6 +879,7 @@ class AskComponent extends Container {
    private allowMultiple: boolean;
    private allowFreeform: boolean;
    private allowComment: boolean;
+   private displayMode: AskDisplayMode;
    private tui: TUI;
    private theme: Theme;
    private keybindings: KeybindingsManager;
@@ -909,6 +921,7 @@ class AskComponent extends Container {
       allowMultiple: boolean,
       allowFreeform: boolean,
       allowComment: boolean,
+      displayMode: AskDisplayMode,
       tui: TUI,
       theme: Theme,
       keybindings: KeybindingsManager,
@@ -922,6 +935,7 @@ class AskComponent extends Container {
       this.allowMultiple = allowMultiple;
       this.allowFreeform = allowFreeform;
       this.allowComment = allowComment;
+      this.displayMode = displayMode;
       this.tui = tui;
       this.theme = theme;
       this.keybindings = keybindings;
@@ -1044,6 +1058,9 @@ class AskComponent extends Container {
 
    private updateHelpText(): void {
       const theme = this.theme;
+      const overlayHint = this.displayMode === "overlay"
+         ? literalHint(theme, OVERLAY_HIDE_TOGGLE_LABEL, "hide")
+         : null;
       if (this.mode === "freeform" || this.mode === "comment") {
          const alternateCancelKeys = this.keybindings
             .getKeys("tui.select.cancel")
@@ -1052,6 +1069,7 @@ class AskComponent extends Container {
             keybindingHint(theme, this.keybindings, "tui.input.submit", this.mode === "comment" ? "submit/skip" : "submit"),
             keybindingHint(theme, this.keybindings, "tui.input.newLine", "newline"),
             literalHint(theme, "esc", "back"),
+            overlayHint,
             alternateCancelKeys.length > 0 ? literalHint(theme, formatKeyList(alternateCancelKeys), "cancel") : null,
          ]
             .filter((hint): hint is string => !!hint)
@@ -1065,6 +1083,7 @@ class AskComponent extends Container {
             literalHint(theme, "↑↓", "navigate"),
             literalHint(theme, "space", "toggle"),
             this.allowComment ? literalHint(theme, "ctrl+g", "toggle context") : null,
+            overlayHint,
             keybindingHint(theme, this.keybindings, "tui.select.confirm", "submit"),
             keybindingHint(theme, this.keybindings, "tui.select.cancel", "cancel"),
          ]
@@ -1080,6 +1099,7 @@ class AskComponent extends Container {
             keybindingHint(theme, this.keybindings, "tui.editor.deleteCharBackward", "erase"),
             literalHint(theme, "↑↓", "navigate"),
             this.allowComment ? literalHint(theme, "ctrl+g", "toggle context") : null,
+            overlayHint,
             keybindingHint(theme, this.keybindings, "tui.select.confirm", "select"),
             literalHint(theme, "esc", "clear/cancel"),
             alternateCancelKeys.length > 0
@@ -1461,6 +1481,9 @@ export default function(pi: ExtensionAPI) {
          });
 
          let result: AskUIResult | null;
+         let overlayHandle: OverlayHandle | undefined;
+         let removeOverlayInputListener: (() => void) | undefined;
+         let hasAnnouncedHide = false;
          try {
             const customFactory = (tui: TUI, theme: Theme, keybindings: KeybindingsManager, done: (result: AskUIResult | null) => void) => {
                if (signal) {
@@ -1479,6 +1502,7 @@ export default function(pi: ExtensionAPI) {
                   allowMultiple,
                   allowFreeform,
                   allowComment,
+                  effectiveDisplayMode,
                   tui,
                   theme,
                   keybindings,
@@ -1486,7 +1510,28 @@ export default function(pi: ExtensionAPI) {
                );
             };
 
-            const customResult = await ctx.ui.custom<AskUIResult | null>(customFactory, buildCustomUIOptions(effectiveDisplayMode));
+            // Register a raw terminal input listener for alt+o so the overlay can be
+            // toggled even while it is hidden (hidden overlays do not receive input).
+            // Inline mode does not need this because the prompt is already non-modal.
+            if (effectiveDisplayMode === "overlay" && typeof ctx.ui.onTerminalInput === "function") {
+               removeOverlayInputListener = ctx.ui.onTerminalInput((data) => {
+                  if (!isOverlayHideToggleKey(data) || !overlayHandle) return undefined;
+                  const nextHidden = !overlayHandle.isHidden();
+                  overlayHandle.setHidden(nextHidden);
+                  if (nextHidden && !hasAnnouncedHide) {
+                     hasAnnouncedHide = true;
+                     ctx.ui.notify?.(`ask_user hidden — press ${OVERLAY_HIDE_TOGGLE_LABEL} to reopen`, "info");
+                  }
+                  return { consume: true };
+               });
+            }
+
+            const customResult = await ctx.ui.custom<AskUIResult | null>(
+               customFactory,
+               buildCustomUIOptions(effectiveDisplayMode, (handle) => {
+                  overlayHandle = handle;
+               }),
+            );
 
             if (customResult !== undefined) {
                result = customResult;
@@ -1502,6 +1547,8 @@ export default function(pi: ExtensionAPI) {
                isError: true,
                details: { error: message },
             };
+         } finally {
+            removeOverlayInputListener?.();
          }
 
          if (result === null) {

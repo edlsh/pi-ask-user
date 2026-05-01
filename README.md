@@ -17,6 +17,7 @@ High-quality video: [ask-user-demo.mp4](./media/ask-user-demo.mp4)
 - User-toggleable extra context on structured selections
 - Context display support
 - Configurable display mode: `overlay` (modal, default) or `inline` (rendered directly in the flow)
+- Runtime overlay toggle: press `alt+o` while the prompt is open to temporarily hide/show the popup so you can read prior agent output, then press `alt+o` again to bring it back
 - Pi-TUI-aligned keybinding and editor behavior
 - Custom TUI rendering for tool calls and results
 - System prompt integration via `promptSnippet` and `promptGuidelines`
@@ -101,6 +102,20 @@ Effective behavior order:
 3. Fallback default: `"overlay"`
 
 Unrecognised values are silently ignored and fall back to `"overlay"`.
+
+## Controls
+
+While an `ask_user` prompt is open:
+
+| Key | Action |
+|-----|--------|
+| `alt+o` | Hide/show the overlay popup so you can read the agent's prior output. Available in `overlay` mode only. The first time you hide it, a notification reminds you that `alt+o` brings it back. |
+| `ctrl+g` | Toggle the optional comment/extra-context row (when `allowComment: true`). |
+| `enter` | Confirm the focused option, submit a freeform response, or submit/skip an optional comment. |
+| `esc` | Clear the search filter, exit freeform/comment mode, or cancel the prompt. |
+| `↑` / `↓` | Navigate options. |
+
+If you prefer never to see the overlay, set `displayMode: "inline"` per call or `PI_ASK_USER_DISPLAY_MODE=inline` globally.
 
 ## Result details
 
