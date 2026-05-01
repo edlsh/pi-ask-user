@@ -7,6 +7,7 @@
 - `displayMode` parameter on `ask_user` (`"overlay"` | `"inline"`) controlling whether the custom UI renders as a centered modal or in the conversation flow
 - `PI_ASK_USER_DISPLAY_MODE` environment variable for setting a personal default display mode; per-call `displayMode` always wins over the env var, which always wins over the built-in `"overlay"` fallback
 - Skill guidance documenting when to override `displayMode` per call vs. respect the user's env-var preference
+- Runtime overlay toggle: in `overlay` mode, press `ctrl+o` while the prompt is open to temporarily hide/show the popup so you can read prior agent output. Press again to restore. Implemented via `OverlayHandle.setHidden()` and a global `ctx.ui.onTerminalInput` listener so the overlay can be revived even while hidden. A one-shot info notification on first hide reminds the user how to restore. Closes #11.
 
 ### Changed
 

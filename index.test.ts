@@ -373,6 +373,192 @@ describe("ask_user", () => {
       expect(capturedOptions.overlay).toBe(true);
    });
 
+   describe("overlay hide/show toggle (ctrl+o)", () => {
+      function createOverlayHandle() {
+         let hidden = false;
+         const calls: boolean[] = [];
+         return {
+            handle: {
+               hide() { },
+               setHidden(value: boolean) {
+                  hidden = value;
+                  calls.push(value);
+               },
+               isHidden() {
+                  return hidden;
+               },
+               focus() { },
+               unfocus() { },
+               isFocused() {
+                  return false;
+               },
+            },
+            calls,
+         };
+      }
+
+      test("registers an onTerminalInput listener and passes onHandle in overlay mode", async () => {
+         const tool = await setupTool();
+         let capturedOptions: any;
+         let inputHandler: ((data: string) => any) | undefined;
+         let unsubscribed = false;
+
+         await tool.execute(
+            "tool-call-id",
+            { question: "Q", options: ["A"] },
+            undefined,
+            undefined,
+            {
+               hasUI: true,
+               ui: {
+                  custom: async (_factory: any, options: any) => {
+                     capturedOptions = options;
+                     return null;
+                  },
+                  onTerminalInput: (handler: (data: string) => any) => {
+                     inputHandler = handler;
+                     return () => {
+                        unsubscribed = true;
+                     };
+                  },
+                  notify: () => { },
+               },
+            },
+         );
+
+         expect(typeof capturedOptions.onHandle).toBe("function");
+         expect(typeof inputHandler).toBe("function");
+         expect(unsubscribed).toBe(true);
+      });
+
+      test("does not register onTerminalInput in inline mode", async () => {
+         const tool = await setupTool();
+         let registered = false;
+
+         await tool.execute(
+            "tool-call-id",
+            { question: "Q", options: ["A"], displayMode: "inline" },
+            undefined,
+            undefined,
+            {
+               hasUI: true,
+               ui: {
+                  custom: async () => null,
+                  onTerminalInput: () => {
+                     registered = true;
+                     return () => { };
+                  },
+               },
+            },
+         );
+
+         expect(registered).toBe(false);
+      });
+
+      test("ctrl+o toggles overlay visibility via OverlayHandle.setHidden", async () => {
+         const tool = await setupTool();
+         const { handle, calls } = createOverlayHandle();
+         let inputHandler: ((data: string) => any) | undefined;
+         const notifications: Array<{ message: string; type?: string }> = [];
+
+         await tool.execute(
+            "tool-call-id",
+            { question: "Q", options: ["A"] },
+            undefined,
+            undefined,
+            {
+               hasUI: true,
+               ui: {
+                  custom: async (_factory: any, options: any) => {
+                     options.onHandle?.(handle);
+                     // Simulate the user pressing ctrl+o twice while the overlay is shown.
+                     const firstResult = inputHandler?.("ctrl+o");
+                     const secondResult = inputHandler?.("ctrl+o");
+                     expect(firstResult).toEqual({ consume: true });
+                     expect(secondResult).toEqual({ consume: true });
+                     return null;
+                  },
+                  onTerminalInput: (handler: (data: string) => any) => {
+                     inputHandler = handler;
+                     return () => { };
+                  },
+                  notify: (message: string, type?: string) => {
+                     notifications.push({ message, type });
+                  },
+               },
+            },
+         );
+
+         expect(calls).toEqual([true, false]);
+         expect(notifications).toHaveLength(1);
+         expect(notifications[0]?.message).toContain("ctrl+o");
+         expect(notifications[0]?.type).toBe("info");
+      });
+
+      test("ignores non-ctrl+o input from the terminal listener", async () => {
+         const tool = await setupTool();
+         const { handle, calls } = createOverlayHandle();
+         let inputHandler: ((data: string) => any) | undefined;
+
+         await tool.execute(
+            "tool-call-id",
+            { question: "Q", options: ["A"] },
+            undefined,
+            undefined,
+            {
+               hasUI: true,
+               ui: {
+                  custom: async (_factory: any, options: any) => {
+                     options.onHandle?.(handle);
+                     const result = inputHandler?.("a");
+                     expect(result).toBeUndefined();
+                     return null;
+                  },
+                  onTerminalInput: (handler: (data: string) => any) => {
+                     inputHandler = handler;
+                     return () => { };
+                  },
+                  notify: () => { },
+               },
+            },
+         );
+
+         expect(calls).toEqual([]);
+      });
+
+      test("restores a hidden overlay on completion", async () => {
+         const tool = await setupTool();
+         const { handle, calls } = createOverlayHandle();
+         let inputHandler: ((data: string) => any) | undefined;
+
+         await tool.execute(
+            "tool-call-id",
+            { question: "Q", options: ["A"] },
+            undefined,
+            undefined,
+            {
+               hasUI: true,
+               ui: {
+                  custom: async (_factory: any, options: any) => {
+                     options.onHandle?.(handle);
+                     // Hide and resolve while still hidden.
+                     inputHandler?.("ctrl+o");
+                     return null;
+                  },
+                  onTerminalInput: (handler: (data: string) => any) => {
+                     inputHandler = handler;
+                     return () => { };
+                  },
+                  notify: () => { },
+               },
+            },
+         );
+
+         // setHidden(true) from ctrl+o, then setHidden(false) from the finally block.
+         expect(calls).toEqual([true, false]);
+      });
+   });
+
    test("renders partial updates as waiting state instead of a successful empty answer", async () => {
       const tool = await setupTool();
       let partialUpdate: any;
