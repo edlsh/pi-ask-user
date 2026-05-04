@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.9.0](https://github.com/edlsh/pi-ask-user/releases/tag/v0.9.0) - Unreleased
+## [0.9.0](https://github.com/edlsh/pi-ask-user/releases/tag/v0.9.0) - 2026-05-04
 
 ### Added
 
