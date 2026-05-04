@@ -64,6 +64,8 @@ interface AskParams {
    allowFreeform?: boolean;
    allowComment?: boolean;
    displayMode?: AskDisplayMode;
+   overlayToggleKey?: string | null;
+   commentToggleKey?: string | null;
    timeout?: number;
 }
 
@@ -245,12 +247,63 @@ function literalHint(theme: Theme, key: string, description: string): string {
    return `${theme.fg("dim", key)}${theme.fg("muted", ` ${description}`)}`;
 }
 
-function isCommentToggleKey(data: string): boolean {
-   return matchesKey(data, Key.ctrl("g"));
+type ResolvedShortcut =
+   | { disabled: false; spec: string; matches: (data: string) => boolean }
+   | { disabled: true; spec: null; matches: (data: string) => false };
+
+interface ResolvedAskShortcuts {
+   overlayToggle: ResolvedShortcut;
+   commentToggle: ResolvedShortcut;
 }
 
-function isOverlayHideToggleKey(data: string): boolean {
-   return matchesKey(data, Key.alt("o"));
+const DISABLED_SHORTCUT: ResolvedShortcut = {
+   disabled: true,
+   spec: null,
+   matches: ((_data: string) => false) as (data: string) => false,
+};
+
+const SHORTCUT_DISABLE_VALUES = new Set(["off", "none", "disabled", ""]);
+
+function normalizeShortcutSpec(value: string | null | undefined): string | null | undefined {
+   if (value === undefined) return undefined;
+   if (value === null) return null;
+   const trimmed = value.trim().toLowerCase();
+   if (SHORTCUT_DISABLE_VALUES.has(trimmed)) return null;
+   return trimmed;
+}
+
+function isValidShortcutSpec(spec: string): boolean {
+   // KeyId is canonical lowercase: modifiers (`ctrl|shift|alt|super`) joined by `+`,
+   // plus a base key. We do a light syntactic sanity check; matchesKey() does the rest.
+   if (!spec) return false;
+   if (!/^[a-z0-9+_\-!@#$%^&*()|~`'":;,./<>?[\]{}=\\]+$/i.test(spec)) return false;
+   if (spec.startsWith("+") || spec.endsWith("+")) return false;
+   if (spec.includes("++")) return false;
+   return true;
+}
+
+function buildShortcut(spec: string): ResolvedShortcut {
+   return {
+      disabled: false,
+      spec,
+      matches: (data: string) => matchesKey(data, spec as any),
+   };
+}
+
+function resolveShortcut(
+   paramValue: string | null | undefined,
+   envValue: string | undefined,
+   defaultSpec: string,
+): ResolvedShortcut {
+   const candidates: Array<string | null | undefined> = [paramValue, envValue, defaultSpec];
+   for (const raw of candidates) {
+      const normalized = normalizeShortcutSpec(raw);
+      if (normalized === undefined) continue; // not provided, fall through
+      if (normalized === null) return DISABLED_SHORTCUT; // explicit disable
+      if (isValidShortcutSpec(normalized)) return buildShortcut(normalized);
+      // Invalid spec: silently fall through to next candidate.
+   }
+   return DISABLED_SHORTCUT;
 }
 
 type AskMode = "select" | "freeform" | "comment";
@@ -264,7 +317,8 @@ const SINGLE_SELECT_SPLIT_PANE_RIGHT_MIN_WIDTH = 28;
 const SINGLE_SELECT_SPLIT_PANE_SEPARATOR = " │ ";
 const FREEFORM_SENTINEL = "\u270f\ufe0f Type custom response...";
 const COMMENT_TOGGLE_LABEL = "Add extra context after selection";
-const OVERLAY_HIDE_TOGGLE_LABEL = "alt+o";
+const DEFAULT_OVERLAY_TOGGLE_KEY = "alt+o";
+const DEFAULT_COMMENT_TOGGLE_KEY = "ctrl+g";
 
 function buildCustomUIOptions(
    displayMode: AskDisplayMode,
@@ -309,6 +363,7 @@ class MultiSelectList implements Component {
    private allowComment: boolean;
    private theme: Theme;
    private keybindings: KeybindingsManager;
+   private commentToggle: ResolvedShortcut;
    private selectedIndex = 0;
    private checked = new Set<number>();
    private commentEnabled = false;
@@ -325,12 +380,14 @@ class MultiSelectList implements Component {
       allowComment: boolean,
       theme: Theme,
       keybindings: KeybindingsManager,
+      commentToggle: ResolvedShortcut,
    ) {
       this.options = options;
       this.allowFreeform = allowFreeform;
       this.allowComment = allowComment;
       this.theme = theme;
       this.keybindings = keybindings;
+      this.commentToggle = commentToggle;
    }
 
    public isCommentEnabled(): boolean {
@@ -387,7 +444,7 @@ class MultiSelectList implements Component {
          return;
       }
 
-      if (this.allowComment && isCommentToggleKey(data)) {
+      if (this.allowComment && !this.commentToggle.disabled && this.commentToggle.matches(data)) {
          this.toggleComment();
          return;
       }
@@ -531,6 +588,7 @@ class WrappedSingleSelectList implements Component {
    private allowComment: boolean;
    private theme: Theme;
    private keybindings: KeybindingsManager;
+   private commentToggle: ResolvedShortcut;
    private selectedIndex = 0;
    private searchQuery = "";
    private commentEnabled = false;
@@ -548,12 +606,14 @@ class WrappedSingleSelectList implements Component {
       allowComment: boolean,
       theme: Theme,
       keybindings: KeybindingsManager,
+      commentToggle: ResolvedShortcut,
    ) {
       this.options = options;
       this.allowFreeform = allowFreeform;
       this.allowComment = allowComment;
       this.theme = theme;
       this.keybindings = keybindings;
+      this.commentToggle = commentToggle;
    }
 
    public isCommentEnabled(): boolean {
@@ -774,7 +834,7 @@ class WrappedSingleSelectList implements Component {
          return;
       }
 
-      if (this.allowComment && isCommentToggleKey(data)) {
+      if (this.allowComment && !this.commentToggle.disabled && this.commentToggle.matches(data)) {
          this.toggleComment();
          return;
       }
@@ -883,6 +943,7 @@ class AskComponent extends Container {
    private tui: TUI;
    private theme: Theme;
    private keybindings: KeybindingsManager;
+   private shortcuts: ResolvedAskShortcuts;
    private onDone: (result: AskUIResult | null) => void;
 
    private mode: AskMode = "select";
@@ -925,6 +986,7 @@ class AskComponent extends Container {
       tui: TUI,
       theme: Theme,
       keybindings: KeybindingsManager,
+      shortcuts: ResolvedAskShortcuts,
       onDone: (result: AskUIResult | null) => void,
    ) {
       super();
@@ -939,6 +1001,7 @@ class AskComponent extends Container {
       this.tui = tui;
       this.theme = theme;
       this.keybindings = keybindings;
+      this.shortcuts = shortcuts;
       this.onDone = onDone;
 
       // Layout skeleton
@@ -1058,8 +1121,11 @@ class AskComponent extends Container {
 
    private updateHelpText(): void {
       const theme = this.theme;
-      const overlayHint = this.displayMode === "overlay"
-         ? literalHint(theme, OVERLAY_HIDE_TOGGLE_LABEL, "hide")
+      const overlayHint = this.displayMode === "overlay" && !this.shortcuts.overlayToggle.disabled
+         ? literalHint(theme, this.shortcuts.overlayToggle.spec, "hide")
+         : null;
+      const commentHint = this.allowComment && !this.shortcuts.commentToggle.disabled
+         ? literalHint(theme, this.shortcuts.commentToggle.spec, "toggle context")
          : null;
       if (this.mode === "freeform" || this.mode === "comment") {
          const alternateCancelKeys = this.keybindings
@@ -1082,7 +1148,7 @@ class AskComponent extends Container {
          const hints = [
             literalHint(theme, "↑↓", "navigate"),
             literalHint(theme, "space", "toggle"),
-            this.allowComment ? literalHint(theme, "ctrl+g", "toggle context") : null,
+            commentHint,
             overlayHint,
             keybindingHint(theme, this.keybindings, "tui.select.confirm", "submit"),
             keybindingHint(theme, this.keybindings, "tui.select.cancel", "cancel"),
@@ -1098,7 +1164,7 @@ class AskComponent extends Container {
             literalHint(theme, "type", "filter"),
             keybindingHint(theme, this.keybindings, "tui.editor.deleteCharBackward", "erase"),
             literalHint(theme, "↑↓", "navigate"),
-            this.allowComment ? literalHint(theme, "ctrl+g", "toggle context") : null,
+            commentHint,
             overlayHint,
             keybindingHint(theme, this.keybindings, "tui.select.confirm", "select"),
             literalHint(theme, "esc", "clear/cancel"),
@@ -1121,6 +1187,7 @@ class AskComponent extends Container {
          this.allowComment,
          this.theme,
          this.keybindings,
+         this.shortcuts.commentToggle,
       );
       list.onSubmit = (result) => this.handleSelectionSubmit([result], list.isCommentEnabled());
       list.onCancel = () => this.onDone(null);
@@ -1139,6 +1206,7 @@ class AskComponent extends Container {
          this.allowComment,
          this.theme,
          this.keybindings,
+         this.shortcuts.commentToggle,
       );
       list.onCancel = () => this.onDone(null);
       list.onSubmit = (result) => this.handleSelectionSubmit(result, list.isCommentEnabled());
@@ -1409,6 +1477,18 @@ export default function(pi: ExtensionAPI) {
                description: "UI rendering mode. 'overlay' shows a centered modal, 'inline' renders in-place. Default: PI_ASK_USER_DISPLAY_MODE env var if set, otherwise 'overlay'. Omit to respect the user's configured preference.",
             }),
          ),
+         overlayToggleKey: Type.Optional(
+            Type.String({
+               description:
+                  "Shortcut for hiding/showing the overlay popup (overlay mode only), e.g. 'alt+o' or 'ctrl+shift+h'. Pass 'off' to disable. Default: PI_ASK_USER_OVERLAY_TOGGLE_KEY env var if set, otherwise 'alt+o'.",
+            }),
+         ),
+         commentToggleKey: Type.Optional(
+            Type.String({
+               description:
+                  "Shortcut for toggling the optional comment/extra-context row when allowComment is true, e.g. 'ctrl+g'. Pass 'off' to disable. Default: PI_ASK_USER_COMMENT_TOGGLE_KEY env var if set, otherwise 'ctrl+g'.",
+            }),
+         ),
          timeout: Type.Optional(
             Type.Number({ description: "Auto-dismiss after N milliseconds. Returns null (cancelled) when expired." }),
          ),
@@ -1430,12 +1510,26 @@ export default function(pi: ExtensionAPI) {
             allowFreeform = true,
             allowComment = false,
             displayMode,
+            overlayToggleKey,
+            commentToggleKey,
             timeout,
          } = params as AskParams;
          const envMode = process.env.PI_ASK_USER_DISPLAY_MODE;
          const envDisplayMode: AskDisplayMode | undefined =
             envMode === "overlay" || envMode === "inline" ? envMode : undefined;
          const effectiveDisplayMode: AskDisplayMode = displayMode ?? envDisplayMode ?? "overlay";
+         const shortcuts: ResolvedAskShortcuts = {
+            overlayToggle: resolveShortcut(
+               overlayToggleKey,
+               process.env.PI_ASK_USER_OVERLAY_TOGGLE_KEY,
+               DEFAULT_OVERLAY_TOGGLE_KEY,
+            ),
+            commentToggle: resolveShortcut(
+               commentToggleKey,
+               process.env.PI_ASK_USER_COMMENT_TOGGLE_KEY,
+               DEFAULT_COMMENT_TOGGLE_KEY,
+            ),
+         };
          const options = normalizeOptions(rawOptions);
          const normalizedContext = context?.trim() || undefined;
 
@@ -1506,21 +1600,28 @@ export default function(pi: ExtensionAPI) {
                   tui,
                   theme,
                   keybindings,
+                  shortcuts,
                   done,
                );
             };
 
-            // Register a raw terminal input listener for alt+o so the overlay can be
-            // toggled even while it is hidden (hidden overlays do not receive input).
-            // Inline mode does not need this because the prompt is already non-modal.
-            if (effectiveDisplayMode === "overlay" && typeof ctx.ui.onTerminalInput === "function") {
+            // Register a raw terminal input listener for the overlay-toggle key so the
+            // overlay can be toggled even while it is hidden (hidden overlays do not
+            // receive input). Inline mode does not need this because the prompt is
+            // already non-modal. Skipped entirely if the user disabled the shortcut.
+            const overlayToggle = shortcuts.overlayToggle;
+            if (
+               effectiveDisplayMode === "overlay"
+               && !overlayToggle.disabled
+               && typeof ctx.ui.onTerminalInput === "function"
+            ) {
                removeOverlayInputListener = ctx.ui.onTerminalInput((data) => {
-                  if (!isOverlayHideToggleKey(data) || !overlayHandle) return undefined;
+                  if (!overlayToggle.matches(data) || !overlayHandle) return undefined;
                   const nextHidden = !overlayHandle.isHidden();
                   overlayHandle.setHidden(nextHidden);
                   if (nextHidden && !hasAnnouncedHide) {
                      hasAnnouncedHide = true;
-                     ctx.ui.notify?.(`ask_user hidden — press ${OVERLAY_HIDE_TOGGLE_LABEL} to reopen`, "info");
+                     ctx.ui.notify?.(`ask_user hidden — press ${overlayToggle.spec} to reopen`, "info");
                   }
                   return { consume: true };
                });

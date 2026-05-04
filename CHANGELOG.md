@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.9.0](https://github.com/edlsh/pi-ask-user/releases/tag/v0.9.0) - Unreleased
+
+### Added
+
+- Configurable shortcuts: new `overlayToggleKey` and `commentToggleKey` parameters on `ask_user` accept any Pi-TUI [`KeyId`](https://github.com/badlogic/pi-mono/blob/main/packages/tui/src/keys.ts) spec (e.g. `"alt+o"`, `"ctrl+shift+h"`)
+- Matching env vars `PI_ASK_USER_OVERLAY_TOGGLE_KEY` and `PI_ASK_USER_COMMENT_TOGGLE_KEY` for setting personal defaults globally; per-call parameter wins over env var, which wins over the built-in defaults `alt+o` and `ctrl+g`
+- Pass `"off"`, `"none"`, or `"disabled"` at any level to disable a shortcut entirely; invalid specs silently fall through to the next source
+- Defaults preserved: existing `alt+o` overlay-toggle and `ctrl+g` comment-toggle continue to work unchanged. Closes #13.
+
 ## [0.8.0](https://github.com/edlsh/pi-ask-user/releases/tag/v0.8.0) - 2026-05-01
 
 ### Added
