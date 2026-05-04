@@ -557,6 +557,168 @@ describe("ask_user", () => {
 
          expect(calls).toEqual([true]);
       });
+
+      test("per-call overlayToggleKey replaces the default alt+o binding", async () => {
+         const tool = await setupTool();
+         const { handle, calls } = createOverlayHandle();
+         let inputHandler: ((data: string) => any) | undefined;
+         const notifications: Array<{ message: string; type?: string }> = [];
+
+         await tool.execute(
+            "tool-call-id",
+            { question: "Q", options: ["A"], overlayToggleKey: "alt+h" },
+            undefined,
+            undefined,
+            {
+               hasUI: true,
+               ui: {
+                  custom: async (_factory: any, options: any) => {
+                     options.onHandle?.(handle);
+                     const ignored = inputHandler?.("alt+o");
+                     const consumed = inputHandler?.("alt+h");
+                     expect(ignored).toBeUndefined();
+                     expect(consumed).toEqual({ consume: true });
+                     return null;
+                  },
+                  onTerminalInput: (handler: (data: string) => any) => {
+                     inputHandler = handler;
+                     return () => { };
+                  },
+                  notify: (message: string, type?: string) => {
+                     notifications.push({ message, type });
+                  },
+               },
+            },
+         );
+
+         expect(calls).toEqual([true]);
+         expect(notifications).toHaveLength(1);
+         expect(notifications[0]?.message).toContain("alt+h");
+      });
+
+      test("PI_ASK_USER_OVERLAY_TOGGLE_KEY env var overrides default", async () => {
+         stubEnv("PI_ASK_USER_OVERLAY_TOGGLE_KEY", "alt+h");
+         const tool = await setupTool();
+         const { handle, calls } = createOverlayHandle();
+         let inputHandler: ((data: string) => any) | undefined;
+
+         await tool.execute(
+            "tool-call-id",
+            { question: "Q", options: ["A"] },
+            undefined,
+            undefined,
+            {
+               hasUI: true,
+               ui: {
+                  custom: async (_factory: any, options: any) => {
+                     options.onHandle?.(handle);
+                     const ignored = inputHandler?.("alt+o");
+                     const consumed = inputHandler?.("alt+h");
+                     expect(ignored).toBeUndefined();
+                     expect(consumed).toEqual({ consume: true });
+                     return null;
+                  },
+                  onTerminalInput: (handler: (data: string) => any) => {
+                     inputHandler = handler;
+                     return () => { };
+                  },
+                  notify: () => { },
+               },
+            },
+         );
+
+         expect(calls).toEqual([true]);
+      });
+
+      test("per-call overlayToggleKey wins over env var", async () => {
+         stubEnv("PI_ASK_USER_OVERLAY_TOGGLE_KEY", "alt+h");
+         const tool = await setupTool();
+         const { handle, calls } = createOverlayHandle();
+         let inputHandler: ((data: string) => any) | undefined;
+
+         await tool.execute(
+            "tool-call-id",
+            { question: "Q", options: ["A"], overlayToggleKey: "alt+x" },
+            undefined,
+            undefined,
+            {
+               hasUI: true,
+               ui: {
+                  custom: async (_factory: any, options: any) => {
+                     options.onHandle?.(handle);
+                     const ignoredEnv = inputHandler?.("alt+h");
+                     const consumed = inputHandler?.("alt+x");
+                     expect(ignoredEnv).toBeUndefined();
+                     expect(consumed).toEqual({ consume: true });
+                     return null;
+                  },
+                  onTerminalInput: (handler: (data: string) => any) => {
+                     inputHandler = handler;
+                     return () => { };
+                  },
+                  notify: () => { },
+               },
+            },
+         );
+
+         expect(calls).toEqual([true]);
+      });
+
+      test("overlayToggleKey 'off' disables the listener entirely", async () => {
+         const tool = await setupTool();
+         let registered = false;
+
+         await tool.execute(
+            "tool-call-id",
+            { question: "Q", options: ["A"], overlayToggleKey: "off" },
+            undefined,
+            undefined,
+            {
+               hasUI: true,
+               ui: {
+                  custom: async () => null,
+                  onTerminalInput: () => {
+                     registered = true;
+                     return () => { };
+                  },
+               },
+            },
+         );
+
+         expect(registered).toBe(false);
+      });
+
+      test("invalid overlayToggleKey falls through to env var", async () => {
+         stubEnv("PI_ASK_USER_OVERLAY_TOGGLE_KEY", "alt+h");
+         const tool = await setupTool();
+         const { handle, calls } = createOverlayHandle();
+         let inputHandler: ((data: string) => any) | undefined;
+
+         await tool.execute(
+            "tool-call-id",
+            { question: "Q", options: ["A"], overlayToggleKey: "++bad++" },
+            undefined,
+            undefined,
+            {
+               hasUI: true,
+               ui: {
+                  custom: async (_factory: any, options: any) => {
+                     options.onHandle?.(handle);
+                     const consumed = inputHandler?.("alt+h");
+                     expect(consumed).toEqual({ consume: true });
+                     return null;
+                  },
+                  onTerminalInput: (handler: (data: string) => any) => {
+                     inputHandler = handler;
+                     return () => { };
+                  },
+                  notify: () => { },
+               },
+            },
+         );
+
+         expect(calls).toEqual([true]);
+      });
    });
 
    test("renders partial updates as waiting state instead of a successful empty answer", async () => {
@@ -1145,6 +1307,97 @@ describe("ask_user", () => {
       expect(renderedBefore).toContain("[ ] Add extra context after selection");
       expect(renderedAfter).toContain("[✓] Add extra context after selection");
       expect(helpText).toContain("ctrl+g toggle context");
+   });
+
+   test("uses custom commentToggleKey for comment toggling and help text", async () => {
+      const tool = await setupTool();
+      let renderedBefore = "";
+      let renderedAfterIgnored = "";
+      let renderedAfterCustom = "";
+      let helpText = "";
+
+      const result = await tool.execute(
+         "tool-call-id",
+         {
+            question: "Which option should we use?",
+            options: ["Alpha", "Beta"],
+            allowComment: true,
+            commentToggleKey: "alt+c",
+         },
+         undefined,
+         undefined,
+         {
+            hasUI: true,
+            ui: {
+               custom: async (factory: any) => {
+                  const component = factory(
+                     { requestRender() { }, terminal: { rows: 24 } },
+                     createTheme(),
+                     createKeybindings(),
+                     () => { },
+                  );
+
+                  renderedBefore = ((component as any).singleSelectList as any).render(80).join("\n");
+                  helpText = (component as any).helpText.render().join("\n");
+                  // Default ctrl+g should no longer toggle.
+                  component.handleInput("ctrl+g");
+                  renderedAfterIgnored = ((component as any).singleSelectList as any).render(80).join("\n");
+                  // Configured alt+c should toggle.
+                  component.handleInput("alt+c");
+                  renderedAfterCustom = ((component as any).singleSelectList as any).render(80).join("\n");
+                  return null;
+               },
+            },
+         },
+      );
+
+      expect(result.isError).not.toBe(true);
+      expect(renderedBefore).toContain("[ ] Add extra context after selection");
+      expect(renderedAfterIgnored).toContain("[ ] Add extra context after selection");
+      expect(renderedAfterCustom).toContain("[✓] Add extra context after selection");
+      expect(helpText).toContain("alt+c toggle context");
+      expect(helpText).not.toContain("ctrl+g toggle context");
+   });
+
+   test("commentToggleKey 'off' hides the toggle hint and ignores ctrl+g", async () => {
+      const tool = await setupTool();
+      let renderedBefore = "";
+      let renderedAfter = "";
+      let helpText = "";
+
+      await tool.execute(
+         "tool-call-id",
+         {
+            question: "Q",
+            options: ["Alpha", "Beta"],
+            allowComment: true,
+            commentToggleKey: "off",
+         },
+         undefined,
+         undefined,
+         {
+            hasUI: true,
+            ui: {
+               custom: async (factory: any) => {
+                  const component = factory(
+                     { requestRender() { }, terminal: { rows: 24 } },
+                     createTheme(),
+                     createKeybindings(),
+                     () => { },
+                  );
+                  renderedBefore = ((component as any).singleSelectList as any).render(80).join("\n");
+                  helpText = (component as any).helpText.render().join("\n");
+                  component.handleInput("ctrl+g");
+                  renderedAfter = ((component as any).singleSelectList as any).render(80).join("\n");
+                  return null;
+               },
+            },
+         },
+      );
+
+      expect(renderedBefore).toContain("[ ] Add extra context after selection");
+      expect(renderedAfter).toContain("[ ] Add extra context after selection");
+      expect(helpText).not.toContain("toggle context");
    });
 
 
