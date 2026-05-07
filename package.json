@@ -1,6 +1,6 @@
 {
   "name": "pi-ask-user",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "description": "Interactive ask_user tool for pi-coding-agent with searchable split-pane selection UI, multi-select, and freeform input",
   "type": "module",
   "keywords": [
@@ -44,8 +44,8 @@
     "check": "npm pack --dry-run"
   },
   "peerDependencies": {
-    "@mariozechner/pi-coding-agent": "*",
-    "@mariozechner/pi-tui": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
     "@sinclair/typebox": "*"
   }
 }

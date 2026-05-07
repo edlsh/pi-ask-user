@@ -72,13 +72,13 @@ function createKeybindings(overrides: Partial<Record<string, string[]>> = {}) {
 }
 
 beforeAll(() => {
-   mock.module("@mariozechner/pi-coding-agent", () => ({
+   mock.module("@earendil-works/pi-coding-agent", () => ({
       DynamicBorder: class { },
       getMarkdownTheme: () => undefined,
       rawKeyHint: (key: string, description: string) => `${key} ${description}`,
    }));
 
-   mock.module("@mariozechner/pi-tui", () => ({
+   mock.module("@earendil-works/pi-tui", () => ({
       Container: MockContainer,
       Editor: MockEditor,
       Key: {

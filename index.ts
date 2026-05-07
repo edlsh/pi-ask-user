@@ -5,8 +5,8 @@
  * and a custom box border instead of manual ANSI box drawing.
  */
 
-import type { ExtensionAPI, Theme } from "@mariozechner/pi-coding-agent";
-import { getMarkdownTheme } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
+import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { Type, type TUnsafe } from "@sinclair/typebox";
 import {
    Container,
@@ -27,7 +27,7 @@ import {
    type TUI,
    truncateToWidth,
    wrapTextWithAnsi,
-} from "@mariozechner/pi-tui";
+} from "@earendil-works/pi-tui";
 import { renderSingleSelectRows } from "./single-select-layout";
 
 import { createRequire } from "node:module";
