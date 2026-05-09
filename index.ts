@@ -320,6 +320,27 @@ const COMMENT_TOGGLE_LABEL = "Add extra context after selection";
 const DEFAULT_OVERLAY_TOGGLE_KEY = "alt+o";
 const DEFAULT_COMMENT_TOGGLE_KEY = "ctrl+g";
 
+// Vim-style aliases for navigating option lists. ctrl+j/k are safe in the
+// searchable single-select because they don't collide with fuzzy-search input.
+const VIM_SELECT_UP_KEY = Key.ctrl("k");
+const VIM_SELECT_DOWN_KEY = Key.ctrl("j");
+
+function matchesSelectUp(data: string, keybindings: KeybindingsManager): boolean {
+   return (
+      keybindings.matches(data, "tui.select.up") ||
+      matchesKey(data, Key.shift("tab")) ||
+      matchesKey(data, VIM_SELECT_UP_KEY)
+   );
+}
+
+function matchesSelectDown(data: string, keybindings: KeybindingsManager): boolean {
+   return (
+      keybindings.matches(data, "tui.select.down") ||
+      matchesKey(data, Key.tab) ||
+      matchesKey(data, VIM_SELECT_DOWN_KEY)
+   );
+}
+
 function buildCustomUIOptions(
    displayMode: AskDisplayMode,
    onHandle?: (handle: OverlayHandle) => void,
@@ -449,13 +470,13 @@ class MultiSelectList implements Component {
          return;
       }
 
-      if (this.keybindings.matches(data, "tui.select.up") || matchesKey(data, Key.shift("tab"))) {
+      if (matchesSelectUp(data, this.keybindings)) {
          this.selectedIndex = this.selectedIndex === 0 ? count - 1 : this.selectedIndex - 1;
          this.invalidate();
          return;
       }
 
-      if (this.keybindings.matches(data, "tui.select.down") || matchesKey(data, Key.tab)) {
+      if (matchesSelectDown(data, this.keybindings)) {
          this.selectedIndex = this.selectedIndex === count - 1 ? 0 : this.selectedIndex + 1;
          this.invalidate();
          return;
@@ -842,13 +863,13 @@ class WrappedSingleSelectList implements Component {
       const filteredOptions = this.getFilteredOptions();
       const count = this.getItemCount(filteredOptions);
 
-      if ((this.keybindings.matches(data, "tui.select.up") || matchesKey(data, Key.shift("tab"))) && count > 0) {
+      if (matchesSelectUp(data, this.keybindings) && count > 0) {
          this.selectedIndex = this.selectedIndex === 0 ? count - 1 : this.selectedIndex - 1;
          this.invalidate();
          return;
       }
 
-      if ((this.keybindings.matches(data, "tui.select.down") || matchesKey(data, Key.tab)) && count > 0) {
+      if (matchesSelectDown(data, this.keybindings) && count > 0) {
          this.selectedIndex = this.selectedIndex === count - 1 ? 0 : this.selectedIndex + 1;
          this.invalidate();
          return;

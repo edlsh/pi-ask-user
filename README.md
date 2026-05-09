@@ -129,7 +129,7 @@ While an `ask_user` prompt is open:
 | `ctrl+g` (configurable via `commentToggleKey`) | Toggle the optional comment/extra-context row (when `allowComment: true`). |
 | `enter` | Confirm the focused option, submit a freeform response, or submit/skip an optional comment. |
 | `esc` | Clear the search filter, exit freeform/comment mode, or cancel the prompt. |
-| `↑` / `↓` | Navigate options. |
+| `↑` / `↓`, `ctrl+k` / `ctrl+j` | Navigate options. `ctrl+k` / `ctrl+j` (vim-style) work while typing in searchable prompts without disturbing the filter. |
 
 If you prefer never to see the overlay, set `displayMode: "inline"` per call or `PI_ASK_USER_DISPLAY_MODE=inline` globally.
 

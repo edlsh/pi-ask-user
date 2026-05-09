@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.11.0](https://github.com/edlsh/pi-ask-user/releases/tag/v0.11.0) - 2026-05-09
+
+### Added
+
+- Vim-style navigation aliases for option lists: `ctrl+j` moves to the next option and `ctrl+k` moves to the previous option in both single-select (with active fuzzy search) and multi-select prompts. Bare `j`/`k` continue to feed the fuzzy filter so search behavior is unchanged. Closes #16.
+
 ## [0.10.0](https://github.com/edlsh/pi-ask-user/releases/tag/v0.10.0) - 2026-05-07
 
 ### Changed

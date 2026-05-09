@@ -953,6 +953,161 @@ describe("ask_user", () => {
       expect(result.details.cancelled).toBe(false);
    });
 
+   test("navigates single-select options with ctrl+j (vim down)", async () => {
+      const tool = await setupTool();
+
+      const result = await tool.execute(
+         "tool-call-id",
+         {
+            question: "Which option should we use?",
+            options: ["Alpha", "Beta", "Gamma"],
+         },
+         undefined,
+         undefined,
+         {
+            hasUI: true,
+            ui: {
+               custom: async (factory: any) => {
+                  let resolved: string | null | undefined;
+                  const component = factory(
+                     { requestRender() { }, terminal: { rows: 24 } },
+                     createTheme(),
+                     createKeybindings(),
+                     (value: string | null) => {
+                        resolved = value;
+                     },
+                  );
+
+                  component.handleInput("ctrl+j");
+                  component.handleInput("enter");
+                  return resolved ?? null;
+               },
+            },
+         },
+      );
+
+      expect(result.isError).not.toBe(true);
+      expect(result.details.response).toEqual({ kind: "selection", selections: ["Beta"] });
+      expect(result.details.cancelled).toBe(false);
+   });
+
+   test("wraps to last option when ctrl+k (vim up) is pressed at the top", async () => {
+      const tool = await setupTool();
+
+      const result = await tool.execute(
+         "tool-call-id",
+         {
+            question: "Which option should we use?",
+            options: ["Alpha", "Beta", "Gamma"],
+            allowFreeform: false,
+         },
+         undefined,
+         undefined,
+         {
+            hasUI: true,
+            ui: {
+               custom: async (factory: any) => {
+                  let resolved: string | null | undefined;
+                  const component = factory(
+                     { requestRender() { }, terminal: { rows: 24 } },
+                     createTheme(),
+                     createKeybindings(),
+                     (value: string | null) => {
+                        resolved = value;
+                     },
+                  );
+
+                  component.handleInput("ctrl+k");
+                  component.handleInput("enter");
+                  return resolved ?? null;
+               },
+            },
+         },
+      );
+
+      expect(result.isError).not.toBe(true);
+      expect(result.details.response).toEqual({ kind: "selection", selections: ["Gamma"] });
+      expect(result.details.cancelled).toBe(false);
+   });
+
+   test("treats bare j as fuzzy-search input rather than navigation", async () => {
+      const tool = await setupTool();
+
+      const result = await tool.execute(
+         "tool-call-id",
+         {
+            question: "Which option should we use?",
+            options: ["Alpha", "June", "Gamma"],
+         },
+         undefined,
+         undefined,
+         {
+            hasUI: true,
+            ui: {
+               custom: async (factory: any) => {
+                  let resolved: string | null | undefined;
+                  const component = factory(
+                     { requestRender() { }, terminal: { rows: 24 } },
+                     createTheme(),
+                     createKeybindings(),
+                     (value: string | null) => {
+                        resolved = value;
+                     },
+                  );
+
+                  component.handleInput("j");
+                  component.handleInput("enter");
+                  return resolved ?? null;
+               },
+            },
+         },
+      );
+
+      expect(result.isError).not.toBe(true);
+      expect(result.details.response).toEqual({ kind: "selection", selections: ["June"] });
+      expect(result.details.cancelled).toBe(false);
+   });
+
+   test("navigates multi-select options with ctrl+j before toggling", async () => {
+      const tool = await setupTool();
+
+      const result = await tool.execute(
+         "tool-call-id",
+         {
+            question: "Which options should we use?",
+            options: ["Alpha", "Beta", "Gamma"],
+            allowMultiple: true,
+         },
+         undefined,
+         undefined,
+         {
+            hasUI: true,
+            ui: {
+               custom: async (factory: any) => {
+                  let resolved: any;
+                  const component = factory(
+                     { requestRender() { }, terminal: { rows: 24 } },
+                     createTheme(),
+                     createKeybindings(),
+                     (value: any) => {
+                        resolved = value;
+                     },
+                  );
+
+                  component.handleInput("ctrl+j");
+                  component.handleInput("space");
+                  component.handleInput("enter");
+                  return resolved ?? null;
+               },
+            },
+         },
+      );
+
+      expect(result.isError).not.toBe(true);
+      expect(result.details.response).toEqual({ kind: "selection", selections: ["Beta"] });
+      expect(result.details.cancelled).toBe(false);
+   });
+
    test("keeps single-select search usable when comment toggling is enabled", async () => {
       const tool = await setupTool();
 
