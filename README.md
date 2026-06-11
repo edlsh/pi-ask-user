@@ -140,7 +140,7 @@ All tool results include a structured `details` object for rendering and session
 ```typescript
 type AskResponse =
   | { kind: "selection"; selections: string[]; comment?: string }
-  | { kind: "freeform"; text: string };
+  | { kind: "freeform"; text: string; comment?: string };
 
 interface AskToolDetails {
   question: string;
@@ -150,6 +150,59 @@ interface AskToolDetails {
   cancelled: boolean;
 }
 ```
+
+## External prompt responder events
+
+Integrations that run inside the same Pi process can mirror an `ask_user` prompt
+in another surface (for example a mobile app, chat bridge, or web UI) without
+replacing the local TUI. The extension emits process-local events on
+`pi.events`:
+
+### `ask:prompt`
+
+Emitted after input normalization and before the local prompt is answered.
+
+```typescript
+type ExternalAskPromptEvent = {
+  toolCallId: string;
+  question: string;
+  context?: string;
+  options: QuestionOption[];
+  allowMultiple: boolean;
+  allowFreeform: boolean;
+  allowComment: boolean;
+
+  // Resolve the prompt from the external surface. Pass null to cancel.
+  // Returns false if the prompt already settled locally or externally.
+  respond(result: AskResponse | null): boolean;
+
+  // Alias for respond(), kept for integrations that use resolve naming.
+  resolve(result: AskResponse | null): boolean;
+};
+```
+
+The first answer wins. If the external surface calls `respond(...)` first, the
+local prompt closes and the tool returns a normal `ask_user` result. If the local
+TUI answers first, later external calls return `false`.
+
+### `ask:answered` / `ask:cancelled`
+
+Emitted when the local or external answer is finalized, so mirrored UIs can mark
+their prompt as answered or cancelled:
+
+```typescript
+pi.events.on("ask:answered", (event) => {
+  // { toolCallId, question, context, response }
+});
+
+pi.events.on("ask:cancelled", (event) => {
+  // { toolCallId, question, context, options }
+});
+```
+
+These events are intentionally in-process callbacks, not a serializable wire
+protocol. Bridge extensions should translate them into their own transport
+format when forwarding prompts to another device or service.
 
 ## Changelog
 
