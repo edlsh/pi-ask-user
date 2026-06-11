@@ -352,6 +352,168 @@ describe("ask_user", () => {
       expect(promptEvent?.payload.respond({ kind: "selection", selections: ["B"] })).toBe(false);
    });
 
+   test("external responder returns false after custom() directly returns a local answer", async () => {
+      const tool = await setupTool();
+
+      const result = await tool.execute(
+         "tool-call-id",
+         {
+            question: "Which option should we use?",
+            options: ["A", "B"],
+         },
+         undefined,
+         undefined,
+         {
+            hasUI: true,
+            ui: {
+               custom: async () => ({ kind: "selection", selections: ["A"] }),
+            },
+         },
+      );
+
+      expect(result.details.response).toEqual({ kind: "selection", selections: ["A"] });
+      const promptEvent = emittedEvents.find((event) => event.name === "ask:prompt");
+      expect(promptEvent?.payload.respond({ kind: "selection", selections: ["B"] })).toBe(false);
+   });
+
+   test("external responder returns false after custom() directly cancels", async () => {
+      const tool = await setupTool();
+
+      const result = await tool.execute(
+         "tool-call-id",
+         {
+            question: "Which option should we use?",
+            options: ["A", "B"],
+         },
+         undefined,
+         undefined,
+         {
+            hasUI: true,
+            ui: {
+               custom: async () => null,
+            },
+         },
+      );
+
+      expect(result.details.cancelled).toBe(true);
+      const promptEvent = emittedEvents.find((event) => event.name === "ask:prompt");
+      expect(promptEvent?.payload.respond({ kind: "selection", selections: ["B"] })).toBe(false);
+   });
+
+   test("external cancellation resolves as a cancelled ask_user result", async () => {
+      const tool = await setupTool();
+      let doneCallback: ((result: any) => void) | undefined;
+
+      const pending = tool.execute(
+         "tool-call-id",
+         {
+            question: "Which option should we use?",
+            options: ["A", "B"],
+         },
+         undefined,
+         undefined,
+         {
+            hasUI: true,
+            ui: {
+               custom: async (factory: any) => new Promise((resolve) => {
+                  doneCallback = resolve;
+                  factory(
+                     { terminal: { rows: 30 }, requestRender: () => undefined },
+                     createTheme(),
+                     createKeybindings(),
+                     resolve,
+                  );
+               }),
+               onTerminalInput: () => () => undefined,
+               notify: () => undefined,
+            },
+         },
+      );
+
+      expect(doneCallback).toBeDefined();
+      const promptEvent = emittedEvents.find((event) => event.name === "ask:prompt");
+      expect(promptEvent?.payload.respond(null)).toBe(true);
+
+      const result = await pending;
+      expect(result.details.cancelled).toBe(true);
+      expect(result.details.response).toBeNull();
+      const cancelledEvent = emittedEvents.find((event) => event.name === "ask:cancelled");
+      expect(cancelledEvent?.payload.toolCallId).toBe("tool-call-id");
+   });
+
+   test("resolve alias behaves like respond for external answers", async () => {
+      const tool = await setupTool();
+
+      const pending = tool.execute(
+         "tool-call-id",
+         {
+            question: "Which option should we use?",
+            options: ["A", "B"],
+         },
+         undefined,
+         undefined,
+         {
+            hasUI: true,
+            ui: {
+               custom: async (factory: any) => new Promise((resolve) => {
+                  factory(
+                     { terminal: { rows: 30 }, requestRender: () => undefined },
+                     createTheme(),
+                     createKeybindings(),
+                     resolve,
+                  );
+               }),
+               onTerminalInput: () => () => undefined,
+               notify: () => undefined,
+            },
+         },
+      );
+
+      const promptEvent = emittedEvents.find((event) => event.name === "ask:prompt");
+      expect(promptEvent?.payload.resolve({ kind: "selection", selections: ["B"] })).toBe(true);
+      expect(promptEvent?.payload.respond({ kind: "selection", selections: ["A"] })).toBe(false);
+
+      const result = await pending;
+      expect(result.details.response).toEqual({ kind: "selection", selections: ["B"] });
+   });
+
+   test("external responder rejects invalid responses without settling", async () => {
+      const tool = await setupTool();
+
+      const pending = tool.execute(
+         "tool-call-id",
+         {
+            question: "Which option should we use?",
+            options: ["A", "B"],
+            allowFreeform: false,
+         },
+         undefined,
+         undefined,
+         {
+            hasUI: true,
+            ui: {
+               custom: async (factory: any) => new Promise((resolve) => {
+                  factory(
+                     { terminal: { rows: 30 }, requestRender: () => undefined },
+                     createTheme(),
+                     createKeybindings(),
+                     resolve,
+                  );
+               }),
+               onTerminalInput: () => () => undefined,
+               notify: () => undefined,
+            },
+         },
+      );
+
+      const promptEvent = emittedEvents.find((event) => event.name === "ask:prompt");
+      expect(promptEvent?.payload.respond({ kind: "freeform", text: "not allowed" })).toBe(false);
+      expect(promptEvent?.payload.respond({ kind: "selection", selections: ["B"] })).toBe(true);
+
+      const result = await pending;
+      expect(result.details.response).toEqual({ kind: "selection", selections: ["B"] });
+   });
+
    test("uses non-overlay custom UI when displayMode is inline", async () => {
       const tool = await setupTool();
       let capturedOptions: any;
@@ -1973,6 +2135,70 @@ describe("ask_user", () => {
          expect(result.isError).not.toBe(true);
          expect(inputCalled).toBe(true);
          expect(result.details.response).toEqual({ kind: "freeform", text: "Purple" });
+      });
+
+      test("empty options fall back directly to input()", async () => {
+         const tool = await setupTool();
+         let inputTitle = "";
+         let selectCalled = false;
+
+         const result = await tool.execute(
+            "tool-call-id",
+            {
+               question: "What should we do?",
+            },
+            undefined,
+            undefined,
+            {
+               hasUI: true,
+               ui: {
+                  custom: async () => undefined,
+                  select: async () => {
+                     selectCalled = true;
+                     return undefined;
+                  },
+                  input: async (title: string) => {
+                     inputTitle = title;
+                     return "Ship it";
+                  },
+               },
+            },
+         );
+
+         expect(result.isError).not.toBe(true);
+         expect(selectCalled).toBe(false);
+         expect(inputTitle).toContain("What should we do?");
+         expect(result.details.response).toEqual({ kind: "freeform", text: "Ship it" });
+      });
+
+      test("empty options still use direct input when allowFreeform is false", async () => {
+         const tool = await setupTool();
+         let selectCalled = false;
+
+         const result = await tool.execute(
+            "tool-call-id",
+            {
+               question: "What should we do?",
+               allowFreeform: false,
+            },
+            undefined,
+            undefined,
+            {
+               hasUI: true,
+               ui: {
+                  custom: async () => undefined,
+                  select: async () => {
+                     selectCalled = true;
+                     return undefined;
+                  },
+                  input: async () => "Still answer freely",
+               },
+            },
+         );
+
+         expect(result.isError).not.toBe(true);
+         expect(selectCalled).toBe(false);
+         expect(result.details.response).toEqual({ kind: "freeform", text: "Still answer freely" });
       });
 
       test("multi-select degrades to input() with options in prompt", async () => {

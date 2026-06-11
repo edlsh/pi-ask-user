@@ -133,10 +133,14 @@ type ExternalAskPromptEvent = {
    resolve: (result: AskUIResult | null) => boolean;
 };
 
+type ExternalAskWaitResult =
+   | { source: "external"; result: AskUIResult | null }
+   | { source: "settled" };
+
 type ExternalAskBridge = {
    bindDone(done: (result: AskUIResult | null) => void): void;
    settleFromLocal(): void;
-   wait(): Promise<AskUIResult | null>;
+   wait(): Promise<ExternalAskWaitResult>;
 };
 
 function createExternalAskBridge(
@@ -144,19 +148,25 @@ function createExternalAskBridge(
    event: Omit<ExternalAskPromptEvent, "respond" | "resolve">,
 ): ExternalAskBridge {
    let settled = false;
+   let settledByExternal = false;
    let externalResult: AskUIResult | null | undefined;
    let doneCallback: ((result: AskUIResult | null) => void) | undefined;
-   let resolveExternal: (result: AskUIResult | null) => void = () => { };
-   const externalPromise = new Promise<AskUIResult | null>((resolve) => {
+   let resolveExternal: (result: ExternalAskWaitResult) => void = () => { };
+   const externalPromise = new Promise<ExternalAskWaitResult>((resolve) => {
       resolveExternal = resolve;
    });
 
-   const respond = (result: AskUIResult | null): boolean => {
+   const respond = (rawResult: AskUIResult | null): boolean => {
       if (settled) return false;
+      const result = normalizeExternalAskResult(rawResult, event);
+      if (result === undefined) return false;
       settled = true;
+      settledByExternal = true;
       externalResult = result;
-      doneCallback?.(result);
-      resolveExternal(result);
+      const done = doneCallback;
+      doneCallback = undefined;
+      done?.(result);
+      resolveExternal({ source: "external", result });
       return true;
    };
 
@@ -164,11 +174,17 @@ function createExternalAskBridge(
 
    return {
       bindDone(done) {
-         doneCallback = done;
-         if (settled) done(externalResult ?? null);
+         if (settledByExternal) {
+            done(externalResult ?? null);
+            return;
+         }
+         if (!settled) doneCallback = done;
       },
       settleFromLocal() {
+         if (settled) return;
          settled = true;
+         doneCallback = undefined;
+         resolveExternal({ source: "settled" });
       },
       wait() {
          return externalPromise;
@@ -217,6 +233,45 @@ function createSelectionResponse(selections: string[], comment?: string | null):
    return normalizedComment
       ? { kind: "selection", selections: normalizedSelections, comment: normalizedComment }
       : { kind: "selection", selections: normalizedSelections };
+}
+
+function normalizeExternalAskResult(
+   result: unknown,
+   prompt: Omit<ExternalAskPromptEvent, "respond" | "resolve">,
+): AskUIResult | null | undefined {
+   if (result === null) return null;
+   if (!result || typeof result !== "object") return undefined;
+
+   const response = result as Partial<AskResponse>;
+   if (response.kind === "freeform") {
+      if (!prompt.allowFreeform && prompt.options.length > 0) return undefined;
+      if (typeof response.text !== "string") return undefined;
+      const normalized = createFreeformResponse(response.text);
+      if (!normalized) return undefined;
+      const comment = prompt.allowComment ? normalizeOptionalComment(response.comment) : undefined;
+      return comment ? { ...normalized, comment } : normalized;
+   }
+
+   if (response.kind === "selection") {
+      if (!Array.isArray(response.selections)) return undefined;
+      const normalizedSelections = response.selections
+         .filter((selection): selection is string => typeof selection === "string")
+         .map((selection) => selection.trim())
+         .filter(Boolean);
+      if (normalizedSelections.length === 0) return undefined;
+      if (!prompt.allowMultiple && normalizedSelections.length > 1) return undefined;
+
+      const optionTitles = new Set(prompt.options.map((option) => option.title));
+      if (optionTitles.size === 0) return undefined;
+      if (normalizedSelections.some((selection) => !optionTitles.has(selection))) return undefined;
+
+      return createSelectionResponse(
+         normalizedSelections,
+         prompt.allowComment ? response.comment : undefined,
+      ) ?? undefined;
+   }
+
+   return undefined;
 }
 
 function formatResponseSummary(response: AskResponse): string {
@@ -1491,6 +1546,12 @@ async function askViaDialogs(
    const dialogOpts = timeout ? { timeout } : undefined;
    const prompt = context ? `${question}\n\nContext:\n${context}` : question;
 
+   if (options.length === 0) {
+      const answer = await ui.input(prompt, "Type your answer...", dialogOpts) as string | undefined;
+      if (isCancelledInput(answer)) return null;
+      return createFreeformResponse(answer);
+   }
+
    if (allowMultiple) {
       const optionList = formatOptionsForMessage(options);
       const rawSelections = await ui.input(
@@ -1687,9 +1748,18 @@ export default function(pi: ExtensionAPI) {
          try {
             const customFactory = (tui: TUI, theme: Theme, keybindings: KeybindingsManager, done: (result: AskUIResult | null) => void) => {
                let completed = false;
+               let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+               let removeAbortListener: (() => void) | undefined;
+               const cleanup = () => {
+                  if (timeoutHandle) clearTimeout(timeoutHandle);
+                  timeoutHandle = undefined;
+                  removeAbortListener?.();
+                  removeAbortListener = undefined;
+               };
                const finish = (value: AskUIResult | null, source: "local" | "external") => {
                   if (completed) return;
                   completed = true;
+                  cleanup();
                   if (source === "local") externalBridge.settleFromLocal();
                   done(value);
                };
@@ -1699,10 +1769,11 @@ export default function(pi: ExtensionAPI) {
                if (signal) {
                   const onAbort = () => doneOnce(null);
                   signal.addEventListener("abort", onAbort, { once: true });
+                  removeAbortListener = () => signal.removeEventListener("abort", onAbort);
                }
 
                if (timeout && timeout > 0) {
-                  setTimeout(() => doneOnce(null), timeout);
+                  timeoutHandle = setTimeout(() => doneOnce(null), timeout);
                }
 
                return new AskComponent(
@@ -1751,21 +1822,29 @@ export default function(pi: ExtensionAPI) {
             );
 
             if (customResult !== undefined) {
+               externalBridge.settleFromLocal();
                result = customResult;
             } else {
                // RPC/headless mode: degrade to select()/input() dialog protocol.
-               // Race the dialogs with the external responder so Android can still
+               // Race the dialogs with the external responder so a mirrored UI can
                // answer first even when rich custom UI is unavailable.
-               result = await Promise.race([
+               const raceResult = await Promise.race([
                   askViaDialogs(ctx.ui, question, normalizedContext, options, allowMultiple, allowFreeform, allowComment, timeout)
-                     .then((dialogResult) => {
-                        externalBridge.settleFromLocal();
-                        return dialogResult;
-                     }),
+                     .then((dialogResult) => ({ source: "local" as const, result: dialogResult })),
                   externalBridge.wait(),
                ]);
+               if (raceResult.source === "local") {
+                  externalBridge.settleFromLocal();
+                  result = raceResult.result;
+               } else if (raceResult.source === "external") {
+                  result = raceResult.result;
+               } else {
+                  result = null;
+               }
             }
          } catch (error) {
+            externalBridge.settleFromLocal();
+            pi.events.emit("ask:cancelled", { toolCallId: _toolCallId, question, context: normalizedContext, options });
             const message =
                error instanceof Error ? `${error.message}\n${error.stack ?? ""}` : String(error);
             return {

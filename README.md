@@ -182,8 +182,17 @@ type ExternalAskPromptEvent = {
 ```
 
 The first answer wins. If the external surface calls `respond(...)` first, the
-local prompt closes and the tool returns a normal `ask_user` result. If the local
-TUI answers first, later external calls return `false`.
+tool returns a normal `ask_user` result, and the rich local custom UI is closed
+through its completion callback. RPC dialog fallbacks (`select()` / `input()`)
+may remain visible if the host UI API does not support programmatic
+cancellation. If the local UI answers first, later external calls return
+`false`.
+
+External responses must use the normalized `AskResponse` shape and respect the
+prompt flags: freeform answers require `allowFreeform` (except no-option
+prompts), single-select prompts accept one selection, selections must match the
+provided option titles, and comments are only retained when `allowComment` is
+true. Invalid external responses return `false` without settling the prompt.
 
 ### `ask:answered` / `ask:cancelled`
 
