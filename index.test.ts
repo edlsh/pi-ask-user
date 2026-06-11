@@ -236,6 +236,122 @@ describe("ask_user", () => {
       expect(capturedOptions.overlayOptions.visible).toBeUndefined();
    });
 
+   test("emits ask:prompt and lets an external responder answer the rich UI", async () => {
+      const tool = await setupTool();
+      let doneCallback: ((result: any) => void) | undefined;
+
+      const pending = tool.execute(
+         "tool-call-id",
+         {
+            question: "Which option should we use?",
+            context: "Need a decision",
+            options: ["A", "B"],
+            allowComment: true,
+         },
+         undefined,
+         undefined,
+         {
+            hasUI: true,
+            ui: {
+               custom: async (factory: any) => new Promise((resolve) => {
+                  doneCallback = resolve;
+                  factory(
+                     { terminal: { rows: 30 }, requestRender: () => undefined },
+                     createTheme(),
+                     createKeybindings(),
+                     resolve,
+                  );
+               }),
+               onTerminalInput: () => () => undefined,
+               notify: () => undefined,
+            },
+         },
+      );
+
+      expect(doneCallback).toBeDefined();
+      const promptEvent = emittedEvents.find((event) => event.name === "ask:prompt");
+      expect(promptEvent?.payload).toMatchObject({
+         toolCallId: "tool-call-id",
+         question: "Which option should we use?",
+         context: "Need a decision",
+         allowMultiple: false,
+         allowFreeform: true,
+         allowComment: true,
+      });
+      expect(promptEvent?.payload.respond({ kind: "selection", selections: ["B"], comment: "safer" })).toBe(true);
+
+      const result = await pending;
+      expect(result.details.response).toEqual({ kind: "selection", selections: ["B"], comment: "safer" });
+      expect(result.content[0].text).toBe("User answered: B — safer");
+      const answeredEvent = emittedEvents.find((event) => event.name === "ask:answered");
+      expect(answeredEvent?.payload.toolCallId).toBe("tool-call-id");
+      expect(answeredEvent?.payload.response).toEqual({ kind: "selection", selections: ["B"], comment: "safer" });
+      expect(promptEvent?.payload.respond({ kind: "selection", selections: ["A"] })).toBe(false);
+   });
+
+   test("external responder can win the RPC dialog fallback race", async () => {
+      const tool = await setupTool();
+
+      const pending = tool.execute(
+         "tool-call-id",
+         {
+            question: "Pick a color",
+            options: ["Red", "Blue"],
+            allowFreeform: false,
+         },
+         undefined,
+         undefined,
+         {
+            hasUI: true,
+            ui: {
+               custom: async () => undefined,
+               select: async () => new Promise(() => undefined),
+               input: async () => undefined,
+            },
+         },
+      );
+
+      const promptEvent = emittedEvents.find((event) => event.name === "ask:prompt");
+      expect(promptEvent?.payload.respond({ kind: "selection", selections: ["Blue"] })).toBe(true);
+
+      const result = await pending;
+      expect(result.details.response).toEqual({ kind: "selection", selections: ["Blue"] });
+   });
+
+   test("external responder returns false after the local UI already answered", async () => {
+      const tool = await setupTool();
+
+      const result = await tool.execute(
+         "tool-call-id",
+         {
+            question: "Which option should we use?",
+            options: ["A", "B"],
+         },
+         undefined,
+         undefined,
+         {
+            hasUI: true,
+            ui: {
+               custom: async (factory: any) => new Promise((resolve) => {
+                  const component = factory(
+                     { terminal: { rows: 30 }, requestRender: () => undefined },
+                     createTheme(),
+                     createKeybindings(),
+                     resolve,
+                  );
+                  component.handleInput("enter");
+               }),
+               onTerminalInput: () => () => undefined,
+               notify: () => undefined,
+            },
+         },
+      );
+
+      expect(result.details.response).toEqual({ kind: "selection", selections: ["A"] });
+      const promptEvent = emittedEvents.find((event) => event.name === "ask:prompt");
+      expect(promptEvent?.payload.respond({ kind: "selection", selections: ["B"] })).toBe(false);
+   });
+
    test("uses non-overlay custom UI when displayMode is inline", async () => {
       const tool = await setupTool();
       let capturedOptions: any;

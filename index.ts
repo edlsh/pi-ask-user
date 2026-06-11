@@ -108,6 +108,7 @@ type AskResponse =
    | {
       kind: "freeform";
       text: string;
+      comment?: string;
    };
 
 interface AskToolDetails {
@@ -119,6 +120,61 @@ interface AskToolDetails {
 }
 
 type AskUIResult = AskResponse;
+
+type ExternalAskPromptEvent = {
+   toolCallId: string;
+   question: string;
+   context?: string;
+   options: QuestionOption[];
+   allowMultiple: boolean;
+   allowFreeform: boolean;
+   allowComment: boolean;
+   respond: (result: AskUIResult | null) => boolean;
+   resolve: (result: AskUIResult | null) => boolean;
+};
+
+type ExternalAskBridge = {
+   bindDone(done: (result: AskUIResult | null) => void): void;
+   settleFromLocal(): void;
+   wait(): Promise<AskUIResult | null>;
+};
+
+function createExternalAskBridge(
+   pi: ExtensionAPI,
+   event: Omit<ExternalAskPromptEvent, "respond" | "resolve">,
+): ExternalAskBridge {
+   let settled = false;
+   let externalResult: AskUIResult | null | undefined;
+   let doneCallback: ((result: AskUIResult | null) => void) | undefined;
+   let resolveExternal: (result: AskUIResult | null) => void = () => { };
+   const externalPromise = new Promise<AskUIResult | null>((resolve) => {
+      resolveExternal = resolve;
+   });
+
+   const respond = (result: AskUIResult | null): boolean => {
+      if (settled) return false;
+      settled = true;
+      externalResult = result;
+      doneCallback?.(result);
+      resolveExternal(result);
+      return true;
+   };
+
+   pi.events.emit("ask:prompt", { ...event, respond, resolve: respond } satisfies ExternalAskPromptEvent);
+
+   return {
+      bindDone(done) {
+         doneCallback = done;
+         if (settled) done(externalResult ?? null);
+      },
+      settleFromLocal() {
+         settled = true;
+      },
+      wait() {
+         return externalPromise;
+      },
+   };
+}
 
 function normalizeOptions(options: AskOptionInput[]): QuestionOption[] {
    return options
@@ -164,7 +220,9 @@ function createSelectionResponse(selections: string[], comment?: string | null):
 }
 
 function formatResponseSummary(response: AskResponse): string {
-   if (response.kind === "freeform") return response.text;
+   if (response.kind === "freeform") {
+      return response.comment ? `${response.text} — ${response.comment}` : response.text;
+   }
 
    const selections = response.selections.join(", ");
    return response.comment ? `${selections} — ${response.comment}` : selections;
@@ -1095,7 +1153,11 @@ class AskComponent extends Container {
       ));
 
       this.updateStaticText();
-      this.showSelectMode();
+      if (this.options.length === 0) {
+         this.showFreeformMode();
+      } else {
+         this.showSelectMode();
+      }
    }
 
    override invalidate(): void {
@@ -1383,7 +1445,11 @@ class AskComponent extends Container {
    handleInput(data: string): void {
       if (this.mode === "freeform" || this.mode === "comment") {
          if (matchesKey(data, Key.escape)) {
-            this.showSelectMode();
+            if (this.options.length === 0) {
+               this.onDone(null);
+            } else {
+               this.showSelectMode();
+            }
             return;
          }
 
@@ -1599,24 +1665,15 @@ export default function(pi: ExtensionAPI) {
             };
          }
 
-         if (options.length === 0) {
-            const prompt = normalizedContext ? `${question}\n\nContext:\n${normalizedContext}` : question;
-            const answer = await ctx.ui.input(prompt, "Type your answer...", timeout ? { timeout } : undefined);
-            const response = createFreeformResponse(answer);
-
-            if (!response) {
-               return {
-                  content: [{ type: "text", text: "User cancelled the question" }],
-                  details: { question, context: normalizedContext, options, response: null, cancelled: true } as AskToolDetails,
-               };
-            }
-
-            pi.events.emit("ask:answered", { question, context: normalizedContext, response });
-            return {
-               content: [{ type: "text", text: `User answered: ${formatResponseSummary(response)}` }],
-               details: { question, context: normalizedContext, options, response, cancelled: false } as AskToolDetails,
-            };
-         }
+         const externalBridge = createExternalAskBridge(pi, {
+            toolCallId: _toolCallId,
+            question,
+            context: normalizedContext,
+            options,
+            allowMultiple,
+            allowFreeform,
+            allowComment,
+         });
 
          onUpdate?.({
             content: [{ type: "text", text: "Waiting for user input..." }],
@@ -1629,13 +1686,23 @@ export default function(pi: ExtensionAPI) {
          let hasAnnouncedHide = false;
          try {
             const customFactory = (tui: TUI, theme: Theme, keybindings: KeybindingsManager, done: (result: AskUIResult | null) => void) => {
+               let completed = false;
+               const finish = (value: AskUIResult | null, source: "local" | "external") => {
+                  if (completed) return;
+                  completed = true;
+                  if (source === "local") externalBridge.settleFromLocal();
+                  done(value);
+               };
+               const doneOnce = (value: AskUIResult | null) => finish(value, "local");
+               externalBridge.bindDone((value) => finish(value, "external"));
+
                if (signal) {
-                  const onAbort = () => done(null);
+                  const onAbort = () => doneOnce(null);
                   signal.addEventListener("abort", onAbort, { once: true });
                }
 
                if (timeout && timeout > 0) {
-                  setTimeout(() => done(null), timeout);
+                  setTimeout(() => doneOnce(null), timeout);
                }
 
                return new AskComponent(
@@ -1650,7 +1717,7 @@ export default function(pi: ExtensionAPI) {
                   theme,
                   keybindings,
                   shortcuts,
-                  done,
+                  doneOnce,
                );
             };
 
@@ -1686,8 +1753,17 @@ export default function(pi: ExtensionAPI) {
             if (customResult !== undefined) {
                result = customResult;
             } else {
-               // RPC/headless mode: degrade to select()/input() dialog protocol
-               result = await askViaDialogs(ctx.ui, question, normalizedContext, options, allowMultiple, allowFreeform, allowComment, timeout);
+               // RPC/headless mode: degrade to select()/input() dialog protocol.
+               // Race the dialogs with the external responder so Android can still
+               // answer first even when rich custom UI is unavailable.
+               result = await Promise.race([
+                  askViaDialogs(ctx.ui, question, normalizedContext, options, allowMultiple, allowFreeform, allowComment, timeout)
+                     .then((dialogResult) => {
+                        externalBridge.settleFromLocal();
+                        return dialogResult;
+                     }),
+                  externalBridge.wait(),
+               ]);
             }
          } catch (error) {
             const message =
@@ -1702,7 +1778,7 @@ export default function(pi: ExtensionAPI) {
          }
 
          if (result === null) {
-            pi.events.emit("ask:cancelled", { question, context: normalizedContext, options });
+            pi.events.emit("ask:cancelled", { toolCallId: _toolCallId, question, context: normalizedContext, options });
             return {
                content: [{ type: "text", text: "User cancelled the question" }],
                details: { question, context: normalizedContext, options, response: null, cancelled: true } as AskToolDetails,
@@ -1710,6 +1786,7 @@ export default function(pi: ExtensionAPI) {
          }
 
          pi.events.emit("ask:answered", {
+            toolCallId: _toolCallId,
             question,
             context: normalizedContext,
             response: result,
