@@ -22,6 +22,7 @@ High-quality video: [ask-user-demo.mp4](./media/ask-user-demo.mp4)
 - Custom TUI rendering for tool calls and results
 - System prompt integration via `promptSnippet` and `promptGuidelines`
 - Optional timeout for auto-dismiss in both overlay and fallback input modes
+- Process-local external responder bridge for companion extensions that mirror prompts to another UI
 - Structured `details` on all results for session state reconstruction
 - Graceful fallback when interactive UI is unavailable
 - Bundled `ask-user` skill for mandatory decision-gating in high-stakes or ambiguous tasks
@@ -155,8 +156,9 @@ interface AskToolDetails {
 
 Integrations that run inside the same Pi process can mirror an `ask_user` prompt
 in another surface (for example a mobile app, chat bridge, or web UI) without
-replacing the local TUI. The extension emits process-local events on
-`pi.events`:
+replacing the local TUI and without importing `pi-ask-user` internals. The
+extension emits process-local events on `pi.events`; consumers should treat the
+payloads structurally and feature-detect the bridge at runtime:
 
 ### `ask:prompt`
 
@@ -184,9 +186,10 @@ type ExternalAskPromptEvent = {
 The first answer wins. If the external surface calls `respond(...)` first, the
 tool returns a normal `ask_user` result, and the rich local custom UI is closed
 through its completion callback. RPC dialog fallbacks (`select()` / `input()`)
-may remain visible if the host UI API does not support programmatic
-cancellation. If the local UI answers first, later external calls return
-`false`.
+receive an abort signal that follows both the active agent abort signal and an
+external response, so hosts that honor `signal` can programmatically cancel those
+prompts; hosts that ignore `signal` may still keep their fallback dialog visible.
+If the local UI answers first, later external calls return `false`.
 
 External responses must use the normalized `AskResponse` shape and respect the
 prompt flags: freeform answers require `allowFreeform` (except no-option
@@ -212,6 +215,25 @@ pi.events.on("ask:cancelled", (event) => {
 These events are intentionally in-process callbacks, not a serializable wire
 protocol. Bridge extensions should translate them into their own transport
 format when forwarding prompts to another device or service.
+
+Minimal consumer pattern:
+
+```typescript
+pi.events.on("ask:prompt", (raw) => {
+  if (!raw || typeof raw !== "object") return;
+  const event = raw as {
+    toolCallId?: unknown;
+    question?: unknown;
+    respond?: unknown;
+  };
+  if (typeof event.toolCallId !== "string") return;
+  if (typeof event.question !== "string") return;
+  if (typeof event.respond !== "function") return;
+
+  // Mirror the prompt to another UI. Later, if that UI answers first:
+  event.respond({ kind: "freeform", text: "Use the safer option" });
+});
+```
 
 ## Changelog
 

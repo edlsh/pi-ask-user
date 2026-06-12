@@ -140,6 +140,7 @@ type ExternalAskWaitResult =
 type ExternalAskBridge = {
    bindDone(done: (result: AskUIResult | null) => void): void;
    settleFromLocal(): void;
+   getExternalResult(): Extract<ExternalAskWaitResult, { source: "external" }> | undefined;
    wait(): Promise<ExternalAskWaitResult>;
 };
 
@@ -185,6 +186,9 @@ function createExternalAskBridge(
          settled = true;
          doneCallback = undefined;
          resolveExternal({ source: "settled" });
+      },
+      getExternalResult() {
+         return settledByExternal ? { source: "external", result: externalResult ?? null } : undefined;
       },
       wait() {
          return externalPromise;
@@ -248,6 +252,7 @@ function normalizeExternalAskResult(
       if (typeof response.text !== "string") return undefined;
       const normalized = createFreeformResponse(response.text);
       if (!normalized) return undefined;
+      if (prompt.allowComment && response.comment != null && typeof response.comment !== "string") return undefined;
       const comment = prompt.allowComment ? normalizeOptionalComment(response.comment) : undefined;
       return comment ? { ...normalized, comment } : normalized;
    }
@@ -265,6 +270,7 @@ function normalizeExternalAskResult(
       if (optionTitles.size === 0) return undefined;
       if (normalizedSelections.some((selection) => !optionTitles.has(selection))) return undefined;
 
+      if (prompt.allowComment && response.comment != null && typeof response.comment !== "string") return undefined;
       return createSelectionResponse(
          normalizedSelections,
          prompt.allowComment ? response.comment : undefined,
@@ -1532,7 +1538,41 @@ class AskComponent extends Container {
 /**
  * RPC/headless fallback: use dialog methods (select/input) instead of the rich TUI overlay.
  * ctx.ui.custom() returns undefined in RPC mode, so we degrade gracefully.
+ * When available, pass the agent abort signal through so host dialogs can cancel too.
  */
+function createDialogAbortController(parentSignal?: AbortSignal): {
+   signal?: AbortSignal;
+   abort: () => void;
+   cleanup: () => void;
+} {
+   if (typeof AbortController !== "function") {
+      return { signal: parentSignal, abort: () => { }, cleanup: () => { } };
+   }
+
+   const controller = new AbortController();
+   let removeParentAbortListener: (() => void) | undefined;
+   if (parentSignal) {
+      if (parentSignal.aborted) {
+         controller.abort(parentSignal.reason);
+      } else {
+         const onAbort = () => controller.abort(parentSignal.reason);
+         parentSignal.addEventListener("abort", onAbort, { once: true });
+         removeParentAbortListener = () => parentSignal.removeEventListener("abort", onAbort);
+      }
+   }
+
+   return {
+      signal: controller.signal,
+      abort: () => {
+         if (!controller.signal.aborted) controller.abort();
+      },
+      cleanup: () => {
+         removeParentAbortListener?.();
+         removeParentAbortListener = undefined;
+      },
+   };
+}
+
 async function askViaDialogs(
    ui: { select: Function; input: Function },
    question: string,
@@ -1542,9 +1582,13 @@ async function askViaDialogs(
    allowFreeform: boolean,
    allowComment: boolean,
    timeout?: number,
+   signal?: AbortSignal,
 ): Promise<AskUIResult | null> {
-   const dialogOpts = timeout ? { timeout } : undefined;
+   const dialogOpts = timeout || signal
+      ? { ...(timeout ? { timeout } : {}), ...(signal ? { signal } : {}) }
+      : undefined;
    const prompt = context ? `${question}\n\nContext:\n${context}` : question;
+   if (signal?.aborted) return null;
 
    if (options.length === 0) {
       const answer = await ui.input(prompt, "Type your answer...", dialogOpts) as string | undefined;
@@ -1766,13 +1810,13 @@ export default function(pi: ExtensionAPI) {
                const doneOnce = (value: AskUIResult | null) => finish(value, "local");
                externalBridge.bindDone((value) => finish(value, "external"));
 
-               if (signal) {
+               if (!completed && signal) {
                   const onAbort = () => doneOnce(null);
                   signal.addEventListener("abort", onAbort, { once: true });
                   removeAbortListener = () => signal.removeEventListener("abort", onAbort);
                }
 
-               if (timeout && timeout > 0) {
+               if (!completed && timeout && timeout > 0) {
                   timeoutHandle = setTimeout(() => doneOnce(null), timeout);
                }
 
@@ -1828,11 +1872,18 @@ export default function(pi: ExtensionAPI) {
                // RPC/headless mode: degrade to select()/input() dialog protocol.
                // Race the dialogs with the external responder so a mirrored UI can
                // answer first even when rich custom UI is unavailable.
-               const raceResult = await Promise.race([
-                  askViaDialogs(ctx.ui, question, normalizedContext, options, allowMultiple, allowFreeform, allowComment, timeout)
-                     .then((dialogResult) => ({ source: "local" as const, result: dialogResult })),
-                  externalBridge.wait(),
-               ]);
+               const alreadyExternal = externalBridge.getExternalResult();
+               const raceResult = alreadyExternal ?? await (async () => {
+                  const dialogAbort = createDialogAbortController(signal);
+                  return Promise.race([
+                     askViaDialogs(ctx.ui, question, normalizedContext, options, allowMultiple, allowFreeform, allowComment, timeout, dialogAbort.signal)
+                        .then((dialogResult) => ({ source: "local" as const, result: dialogResult })),
+                     externalBridge.wait().then((externalResult) => {
+                        if (externalResult.source === "external") dialogAbort.abort();
+                        return externalResult;
+                     }),
+                  ]).finally(() => dialogAbort.cleanup());
+               })();
                if (raceResult.source === "local") {
                   externalBridge.settleFromLocal();
                   result = raceResult.result;

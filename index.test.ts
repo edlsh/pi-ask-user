@@ -172,7 +172,7 @@ function stubEnv(key: string, value: string): void {
    });
 }
 
-async function setupTool(): Promise<RegisteredTool> {
+async function setupTool(onEmit?: (name: string, payload: any) => void): Promise<RegisteredTool> {
    const { default: askUserExtension } = await import("./index");
    let registeredTool: RegisteredTool | undefined;
    emittedEvents = [];
@@ -183,6 +183,7 @@ async function setupTool(): Promise<RegisteredTool> {
       events: {
          emit(name: string, payload: any) {
             emittedEvents.push({ name, payload });
+            onEmit?.(name, payload);
          },
       },
    } as any;
@@ -291,6 +292,12 @@ describe("ask_user", () => {
 
    test("external responder can win the RPC dialog fallback race", async () => {
       const tool = await setupTool();
+      let fallbackSignal: AbortSignal | undefined;
+      let fallbackAborted = false;
+      let markSelectStarted!: () => void;
+      const selectStarted = new Promise<void>((resolve) => {
+         markSelectStarted = resolve;
+      });
 
       const pending = tool.execute(
          "tool-call-id",
@@ -305,16 +312,28 @@ describe("ask_user", () => {
             hasUI: true,
             ui: {
                custom: async () => undefined,
-               select: async () => new Promise(() => undefined),
+               select: async (_title: string, _opts: string[], opts: any) => {
+                  fallbackSignal = opts?.signal;
+                  markSelectStarted();
+                  return new Promise((resolve) => {
+                     opts?.signal?.addEventListener("abort", () => {
+                        fallbackAborted = true;
+                        resolve(undefined);
+                     }, { once: true });
+                  });
+               },
                input: async () => undefined,
             },
          },
       );
 
+      await selectStarted;
       const promptEvent = emittedEvents.find((event) => event.name === "ask:prompt");
       expect(promptEvent?.payload.respond({ kind: "selection", selections: ["Blue"] })).toBe(true);
 
       const result = await pending;
+      expect(fallbackSignal).toBeDefined();
+      expect(fallbackAborted).toBe(true);
       expect(result.details.response).toEqual({ kind: "selection", selections: ["Blue"] });
    });
 
@@ -486,6 +505,7 @@ describe("ask_user", () => {
             question: "Which option should we use?",
             options: ["A", "B"],
             allowFreeform: false,
+            allowComment: true,
          },
          undefined,
          undefined,
@@ -508,9 +528,89 @@ describe("ask_user", () => {
 
       const promptEvent = emittedEvents.find((event) => event.name === "ask:prompt");
       expect(promptEvent?.payload.respond({ kind: "freeform", text: "not allowed" })).toBe(false);
+      expect(promptEvent?.payload.respond({ kind: "selection", selections: ["B"], comment: 42 })).toBe(false);
       expect(promptEvent?.payload.respond({ kind: "selection", selections: ["B"] })).toBe(true);
 
       const result = await pending;
+      expect(result.details.response).toEqual({ kind: "selection", selections: ["B"] });
+   });
+
+   test("skips RPC dialogs when a synchronous external responder has already settled", async () => {
+      const tool = await setupTool((name, payload) => {
+         if (name === "ask:prompt") {
+            expect(payload.respond({ kind: "selection", selections: ["Blue"] })).toBe(true);
+         }
+      });
+      let dialogStarted = false;
+
+      const result = await tool.execute(
+         "tool-call-id",
+         {
+            question: "Pick a color",
+            options: ["Red", "Blue"],
+            allowFreeform: false,
+         },
+         undefined,
+         undefined,
+         {
+            hasUI: true,
+            ui: {
+               custom: async () => undefined,
+               select: async () => {
+                  dialogStarted = true;
+                  return "Red";
+               },
+               input: async () => undefined,
+            },
+         },
+      );
+
+      expect(dialogStarted).toBe(false);
+      expect(result.details.response).toEqual({ kind: "selection", selections: ["Blue"] });
+   });
+
+   test("does not register rich UI abort or timeout handlers after a synchronous external response", async () => {
+      const tool = await setupTool((name, payload) => {
+         if (name === "ask:prompt") {
+            expect(payload.respond({ kind: "selection", selections: ["B"] })).toBe(true);
+         }
+      });
+      let addAbortListenerCalls = 0;
+      const signal = {
+         aborted: false,
+         addEventListener() {
+            addAbortListenerCalls += 1;
+         },
+         removeEventListener() { },
+      };
+
+      const result = await tool.execute(
+         "tool-call-id",
+         {
+            question: "Which option should we use?",
+            options: ["A", "B"],
+            timeout: 5000,
+         },
+         signal,
+         undefined,
+         {
+            hasUI: true,
+            ui: {
+               custom: async (factory: any) => new Promise((resolve) => {
+                  factory(
+                     { terminal: { rows: 30 }, requestRender: () => undefined },
+                     createTheme(),
+                     createKeybindings(),
+                     resolve,
+                  );
+               }),
+               onTerminalInput: () => () => undefined,
+               notify: () => undefined,
+            },
+         },
+      );
+
+      expect(addAbortListenerCalls).toBe(0);
       expect(result.details.response).toEqual({ kind: "selection", selections: ["B"] });
    });
 
@@ -2355,7 +2455,56 @@ describe("ask_user", () => {
             },
          );
 
-         expect(capturedOpts).toEqual({ timeout: 5000 });
+         expect(capturedOpts).toMatchObject({ timeout: 5000 });
+         expect(capturedOpts.signal).toBeDefined();
+      });
+
+      test("passes the abort signal to dialog methods so RPC fallback prompts can cancel", async () => {
+         const tool = await setupTool();
+         const controller = new AbortController();
+         let capturedSignal: AbortSignal | undefined;
+         let markSelectStarted!: () => void;
+         const selectStarted = new Promise<void>((resolve) => {
+            markSelectStarted = resolve;
+         });
+
+         const pending = tool.execute(
+            "tool-call-id",
+            {
+               question: "Pick a color",
+               options: ["Red", "Blue"],
+               allowFreeform: false,
+            },
+            controller.signal,
+            undefined,
+            {
+               hasUI: true,
+               ui: {
+                  custom: async () => undefined,
+                  select: async (_title: string, _opts: string[], opts: any) => {
+                     capturedSignal = opts?.signal;
+                     markSelectStarted();
+                     return new Promise((resolve) => {
+                        opts?.signal?.addEventListener("abort", () => resolve(undefined), { once: true });
+                     });
+                  },
+                  input: async () => undefined,
+               },
+            },
+         );
+
+         await selectStarted;
+         controller.abort();
+
+         const result = await Promise.race([
+            pending,
+            new Promise((resolve) => setTimeout(() => resolve("timed out"), 25)),
+         ]);
+
+         expect(capturedSignal).toBeDefined();
+         expect(capturedSignal?.aborted).toBe(true);
+         expect(result).not.toBe("timed out");
+         expect((result as any).details.cancelled).toBe(true);
       });
    });
 });

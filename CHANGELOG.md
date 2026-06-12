@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Add an optional process-local external responder bridge for companion Pi extensions. `ask_user` now emits `ask:prompt` with normalized prompt metadata plus idempotent `respond` / `resolve` callbacks, then emits `ask:answered` or `ask:cancelled` when either the local UI or an external responder settles the prompt. This lets integrations mirror and answer prompts without importing `pi-ask-user` internals or adding a direct package dependency.
+
+### Fixed
+
+- Pass an abort signal into RPC/dialog fallback prompts so hosts that support `signal` can cancel pending `select()` / `input()` prompts after agent aborts or external responses.
+
 ## [0.11.2](https://github.com/edlsh/pi-ask-user/releases/tag/v0.11.2) - 2026-06-03
 
 ### Changed
