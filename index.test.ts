@@ -284,6 +284,42 @@ describe("ask_user", () => {
       ]);
    });
 
+   test("clears Herdr blocked lifecycle when structured UI rejects", async () => {
+      const tool = await setupTool();
+
+      const result = await tool.execute(
+         "tool-call-id",
+         { question: "Continue?", options: ["Yes"] },
+         undefined,
+         undefined,
+         { hasUI: true, ui: { custom: async () => { throw new Error("UI failed"); } } },
+      );
+
+      expect(result.isError).toBe(true);
+      expect(emittedEvents.filter((event) => event.name === "herdr:blocked")).toEqual([
+         { name: "herdr:blocked", payload: { active: true, label: "Waiting for user response" } },
+         { name: "herdr:blocked", payload: { active: false } },
+      ]);
+   });
+
+   test("clears Herdr blocked lifecycle when freeform input is cancelled", async () => {
+      const tool = await setupTool();
+
+      const result = await tool.execute(
+         "tool-call-id",
+         { question: "Why?", options: [] },
+         undefined,
+         undefined,
+         { hasUI: true, ui: { input: async () => undefined } },
+      );
+
+      expect(result.details.cancelled).toBe(true);
+      expect(emittedEvents.filter((event) => event.name === "herdr:blocked")).toEqual([
+         { name: "herdr:blocked", payload: { active: true, label: "Waiting for user response" } },
+         { name: "herdr:blocked", payload: { active: false } },
+      ]);
+   });
+
    test("uses overlay mode by default", async () => {
       const tool = await setupTool();
       let capturedOptions: any;
