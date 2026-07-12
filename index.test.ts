@@ -247,6 +247,43 @@ describe("ask_user", () => {
       expect((tool as any).executionMode).toBe("sequential");
    });
 
+   test("emits Herdr blocked lifecycle while awaiting a structured answer", async () => {
+      const tool = await setupTool();
+
+      await tool.execute(
+         "tool-call-id",
+         { question: "Continue?", options: ["Yes"] },
+         undefined,
+         undefined,
+         {
+            hasUI: true,
+            ui: { custom: async () => ({ kind: "selection", selections: ["Yes"] }) },
+         },
+      );
+
+      expect(emittedEvents.filter((event) => event.name === "herdr:blocked")).toEqual([
+         { name: "herdr:blocked", payload: { active: true, label: "Waiting for user response" } },
+         { name: "herdr:blocked", payload: { active: false } },
+      ]);
+   });
+
+   test("emits Herdr blocked lifecycle while awaiting a freeform answer", async () => {
+      const tool = await setupTool();
+
+      await tool.execute(
+         "tool-call-id",
+         { question: "Why?", options: [] },
+         undefined,
+         undefined,
+         { hasUI: true, ui: { input: async () => "Because" } },
+      );
+
+      expect(emittedEvents.filter((event) => event.name === "herdr:blocked")).toEqual([
+         { name: "herdr:blocked", payload: { active: true, label: "Waiting for user response" } },
+         { name: "herdr:blocked", payload: { active: false } },
+      ]);
+   });
+
    test("uses overlay mode by default", async () => {
       const tool = await setupTool();
       let capturedOptions: any;

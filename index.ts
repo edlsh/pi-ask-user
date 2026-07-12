@@ -1947,7 +1947,13 @@ export default function(pi: ExtensionAPI) {
 
          if (options.length === 0) {
             const prompt = normalizedContext ? `${question}\n\nContext:\n${normalizedContext}` : question;
-            const answer = await ctx.ui.input(prompt, "Type your answer...", timeout ? { timeout } : undefined);
+            pi.events.emit("herdr:blocked", { active: true, label: "Waiting for user response" });
+            let answer: string | undefined;
+            try {
+               answer = await ctx.ui.input(prompt, "Type your answer...", timeout ? { timeout } : undefined);
+            } finally {
+               pi.events.emit("herdr:blocked", { active: false });
+            }
             const response = createFreeformResponse(answer);
 
             if (!response) {
@@ -1973,6 +1979,7 @@ export default function(pi: ExtensionAPI) {
          let overlayHandle: OverlayHandle | undefined;
          let removeOverlayInputListener: (() => void) | undefined;
          let hasAnnouncedHide = false;
+         pi.events.emit("herdr:blocked", { active: true, label: "Waiting for user response" });
          try {
             const customFactory = (tui: TUI, theme: Theme, keybindings: KeybindingsManager, done: (result: AskUIResult | null) => void) => {
                if (signal) {
@@ -2045,6 +2052,7 @@ export default function(pi: ExtensionAPI) {
             };
          } finally {
             removeOverlayInputListener?.();
+            pi.events.emit("herdr:blocked", { active: false });
          }
 
          if (result === null) {
