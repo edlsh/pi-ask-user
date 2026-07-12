@@ -160,6 +160,24 @@ function normalizeOptionalComment(text: string | null | undefined): string | und
    return trimmed ? trimmed : undefined;
 }
 
+function parseBooleanPreference(value: string | undefined): boolean | undefined {
+   if (value === undefined) return undefined;
+   switch (value.trim().toLowerCase()) {
+      case "1":
+      case "true":
+      case "yes":
+      case "on":
+         return true;
+      case "0":
+      case "false":
+      case "no":
+      case "off":
+         return false;
+      default:
+         return undefined;
+   }
+}
+
 function createFreeformResponse(text: string | null | undefined): AskResponse | null {
    const trimmed = text?.trim();
    return trimmed ? { kind: "freeform", text: trimmed } : null;
@@ -1849,7 +1867,7 @@ export default function(pi: ExtensionAPI) {
             Type.Boolean({ description: "Add a freeform text option. Default: true" }),
          ),
          allowComment: Type.Optional(
-            Type.Boolean({ description: "Collect an optional comment after selecting one or more options. Default: false" }),
+            Type.Boolean({ description: "Collect an optional comment after selecting one or more options. Default: PI_ASK_USER_ALLOW_COMMENT env var if set, otherwise false." }),
          ),
          displayMode: Type.Optional(
             StringEnum(["overlay", "inline"] as const, {
@@ -1887,16 +1905,19 @@ export default function(pi: ExtensionAPI) {
             options: rawOptions = [],
             allowMultiple = false,
             allowFreeform = true,
-            allowComment = false,
+            allowComment: requestedAllowComment,
             displayMode,
             overlayToggleKey,
             commentToggleKey,
             timeout,
          } = params as AskParams;
-         const envMode = process.env.PI_ASK_USER_DISPLAY_MODE;
+         const envMode = process.env.PI_ASK_USER_DISPLAY_MODE?.trim().toLowerCase();
          const envDisplayMode: AskDisplayMode | undefined =
             envMode === "overlay" || envMode === "inline" ? envMode : undefined;
          const effectiveDisplayMode: AskDisplayMode = displayMode ?? envDisplayMode ?? "overlay";
+         const allowComment = requestedAllowComment
+            ?? parseBooleanPreference(process.env.PI_ASK_USER_ALLOW_COMMENT)
+            ?? false;
          const shortcuts: ResolvedAskShortcuts = {
             overlayToggle: resolveShortcut(
                overlayToggleKey,

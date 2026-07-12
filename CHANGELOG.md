@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.13.0](https://github.com/edlsh/pi-ask-user/releases/tag/v0.13.0) - 2026-07-12
+
+### Added
+
+- `PI_ASK_USER_ALLOW_COMMENT` preference for globally enabling optional comments while preserving per-call precedence and the existing `false` default. Closes #26.
+
+### Changed
+
+- Display mode environment values now tolerate surrounding whitespace and capitalization, and the documentation clarifies that Pi must inherit `PI_ASK_USER_*` variables from its launching process. Diagnostic hardening related to #24; the reported reproduction (a valid lowercase `inline`) is not resolved by this entry.
+- Documented that pi-tui's overlay compositor skips image rows, leaving overlay prompts invisible where inline images are on screen, with `displayMode: "inline"` as the workaround. Root cause is upstream in pi-tui; related to #8.
+
 ## [0.12.0](https://github.com/edlsh/pi-ask-user/releases/tag/v0.12.0) - 2026-07-06
 
 ### Fixed

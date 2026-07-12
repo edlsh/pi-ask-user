@@ -100,6 +100,13 @@ function createKeybindings(overrides: Partial<Record<string, string[]>> = {}) {
    };
 }
 
+type AskComponentFactory = (
+   tui: unknown,
+   theme: unknown,
+   keybindings: unknown,
+   done: (value: unknown) => void,
+) => { handleInput(data: string): void };
+
 beforeAll(() => {
    // Model the failure mode from https://github.com/edlsh/pi-ask-user/issues/17.
    // `getMarkdownTheme()` returns a bag of closures that read through a Proxy
@@ -385,6 +392,30 @@ describe("ask_user", () => {
             hasUI: true,
             ui: {
                custom: async (_factory: any, options: any) => {
+                  capturedOptions = options;
+                  return null;
+               },
+            },
+         },
+      );
+
+      expect(capturedOptions).toBeUndefined();
+   });
+
+   test("normalizes PI_ASK_USER_DISPLAY_MODE before applying it", async () => {
+      stubEnv("PI_ASK_USER_DISPLAY_MODE", " INLINE ");
+      const tool = await setupTool();
+      let capturedOptions: unknown;
+
+      await tool.execute(
+         "tool-call-id",
+         { question: "Which option should we use?", options: ["A", "B"] },
+         undefined,
+         undefined,
+         {
+            hasUI: true,
+            ui: {
+               custom: async (_factory: unknown, options: unknown) => {
                   capturedOptions = options;
                   return null;
                },
@@ -1221,6 +1252,80 @@ describe("ask_user", () => {
       expect(result.isError).not.toBe(true);
       expect(result.details.response).toEqual({ kind: "selection", selections: ["Chrome"] });
       expect(result.details.cancelled).toBe(false);
+   });
+
+   test("uses PI_ASK_USER_ALLOW_COMMENT when allowComment is omitted", async () => {
+      stubEnv("PI_ASK_USER_ALLOW_COMMENT", "true");
+      const tool = await setupTool();
+
+      const result = await tool.execute(
+         "tool-call-id",
+         { question: "Which option should we use?", options: ["Chrome", "Firefox"] },
+         undefined,
+         undefined,
+         {
+            hasUI: true,
+            ui: {
+               custom: async (factory: AskComponentFactory) => {
+                  let resolved: unknown;
+                  const component = factory(
+                     { requestRender() { }, terminal: { rows: 24 } },
+                     createTheme(),
+                     createKeybindings(),
+                     (value) => { resolved = value; },
+                  );
+                  component.handleInput("ctrl+g");
+                  component.handleInput("enter");
+                  // Discriminator: with the env preference applied, the first
+                  // enter enters comment mode instead of resolving.
+                  expect(resolved).toBeUndefined();
+                  editorText = "Prefer the default browser everywhere.";
+                  component.handleInput("enter");
+                  return resolved ?? null;
+               },
+            },
+         },
+      );
+
+      expect(result.details.response).toEqual({
+         kind: "selection",
+         selections: ["Chrome"],
+         comment: "Prefer the default browser everywhere.",
+      });
+   });
+
+   test("call-level allowComment false overrides PI_ASK_USER_ALLOW_COMMENT", async () => {
+      stubEnv("PI_ASK_USER_ALLOW_COMMENT", "true");
+      const tool = await setupTool();
+
+      const result = await tool.execute(
+         "tool-call-id",
+         { question: "Which option should we use?", options: ["Chrome", "Firefox"], allowComment: false },
+         undefined,
+         undefined,
+         {
+            hasUI: true,
+            ui: {
+               custom: async (factory: AskComponentFactory) => {
+                  let resolved: unknown;
+                  const component = factory(
+                     { requestRender() { }, terminal: { rows: 24 } },
+                     createTheme(),
+                     createKeybindings(),
+                     (value) => { resolved = value; },
+                  );
+                  component.handleInput("ctrl+g");
+                  component.handleInput("enter");
+                  // Discriminator: per-call false wins, so ctrl+g is a no-op
+                  // and the first enter resolves the selection immediately.
+                  expect(resolved).not.toBeUndefined();
+                  return resolved ?? null;
+               },
+            },
+         },
+      );
+
+      expect(result.details.response).toEqual({ kind: "selection", selections: ["Chrome"] });
    });
 
    test("treats out-of-range number keys as search input in single-select mode", async () => {

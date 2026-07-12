@@ -64,7 +64,7 @@ The registered tool name is:
 | `options` | `{title, description?}[]?` | `[]` | Multiple-choice options. The schema is a flat object shape (no `anyOf`, which some provider proxies strip or reject); plain strings and common alias keys (`label`, `text`, `value`, `name`, `option`) are still accepted at runtime |
 | `allowMultiple` | `boolean?` | `false` | Enable multi-select mode |
 | `allowFreeform` | `boolean?` | `true` | Add a "Type something" freeform option |
-| `allowComment` | `boolean?` | `false` | Expose a user-toggleable extra-context option in the custom UI (`ctrl+g` or the toggle row) and collect an optional comment in fallback dialogs |
+| `allowComment` | `boolean?` | env var or `false` | Expose a user-toggleable extra-context option in the custom UI (`ctrl+g` or the toggle row) and collect an optional comment in fallback dialogs |
 | `displayMode` | `"overlay" \| "inline"?` | env var or `"overlay"` | Controls custom UI rendering: `overlay` shows the centered modal (current behavior), `inline` renders without overlay framing |
 | `overlayToggleKey` | `string?` | env var or `"alt+o"` | Shortcut for hiding/showing the overlay popup (overlay mode only). Pi-TUI key spec, e.g. `"alt+o"`, `"ctrl+shift+h"`. Pass `"off"` to disable. |
 | `commentToggleKey` | `string?` | env var or `"ctrl+g"` | Shortcut for toggling the optional comment/extra-context row when `allowComment: true`. Pass `"off"` to disable. |
@@ -95,9 +95,12 @@ Configure your defaults globally by setting these in your shell profile (`~/.zsh
 
 ```bash
 export PI_ASK_USER_DISPLAY_MODE=inline
+export PI_ASK_USER_ALLOW_COMMENT=true
 export PI_ASK_USER_OVERLAY_TOGGLE_KEY=alt+h
 export PI_ASK_USER_COMMENT_TOGGLE_KEY=alt+c
 ```
+
+Environment variables must be present in the process that launches Pi. If Pi is launched from a desktop app or a different shell, changes in `~/.zshrc` may not be inherited; launch Pi from a terminal where `echo $PI_ASK_USER_DISPLAY_MODE` shows the expected value.
 
 ### Display mode
 
@@ -108,6 +111,14 @@ Effective order:
 3. Fallback default: `"overlay"`
 
 Unrecognised values are silently ignored and fall back to `"overlay"`.
+
+### Optional comments
+
+Effective order:
+
+1. Per-call `allowComment` parameter (if provided)
+2. `PI_ASK_USER_ALLOW_COMMENT` (`true`, `1`, `yes`, or `on`; corresponding false values are also accepted)
+3. Fallback default: `false`
 
 ### Shortcuts
 
@@ -132,6 +143,10 @@ While an `ask_user` prompt is open:
 | `↑` / `↓`, `ctrl+k` / `ctrl+j` | Navigate options. `ctrl+k` / `ctrl+j` (vim-style) work while typing in searchable prompts without disturbing the filter. |
 
 If you prefer never to see the overlay, set `displayMode: "inline"` per call or `PI_ASK_USER_DISPLAY_MODE=inline` globally.
+
+## Known limitations
+
+- **Overlays cannot draw over inline images** ([#8](https://github.com/edlsh/pi-ask-user/issues/8)). Pi-TUI's overlay compositor skips rows occupied by terminal images (Kitty/iTerm2 graphics), so an `ask_user` overlay that intersects an image is partially or fully invisible. This must be fixed upstream in pi-tui (`compositeLineAt` returns image rows unchanged). Until then, `displayMode: "inline"` (or `PI_ASK_USER_DISPLAY_MODE=inline`) sidesteps the overlay compositor entirely and should keep the prompt visible.
 
 ## Result details
 
