@@ -380,6 +380,9 @@ const FREEFORM_SENTINEL = "\u270f\ufe0f Type custom response...";
 const COMMENT_TOGGLE_LABEL = "Add extra context after selection";
 const DEFAULT_OVERLAY_TOGGLE_KEY = "alt+o";
 const DEFAULT_COMMENT_TOGGLE_KEY = "ctrl+g";
+const CONTEXT_TOGGLE_KEY = Key.ctrl("e");
+const CONTEXT_TOGGLE_LABEL = "ctrl+e";
+const INLINE_CONTEXT_MAX_ROWS = 3;
 
 // Vim-style aliases for navigating option lists. ctrl+j/k are safe in the
 // searchable single-select because they don't collide with fuzzy-search input.
@@ -1046,6 +1049,8 @@ class AskComponent extends Container {
    private promptScrollOffset = 0;
    private promptMaxScrollOffset = 0;
    private promptViewportRows = 0;
+   private contextIsCollapsible = false;
+   private contextExpanded = false;
 
    // Static layout components
    private titleText: Text;
@@ -1163,7 +1168,20 @@ class AskComponent extends Container {
          this.ensureSingleSelectList().setMaxVisibleRows(12);
       }
 
-      return this.frameRawLines(super.render(innerWidth), width, innerWidth);
+      return this.renderInlineLayout(width, innerWidth);
+   }
+
+   private renderInlineLayout(width: number, innerWidth: number): string[] {
+      const fullContextLines = this.buildFullContextLines(innerWidth);
+      this.setContextIsCollapsible(fullContextLines.length > INLINE_CONTEXT_MAX_ROWS);
+      const bodyLines = [
+         ...this.buildPromptLines(innerWidth, fullContextLines),
+         "",
+         ...this.modeContainer.render(innerWidth),
+         "",
+         ...this.helpText.render(innerWidth),
+      ];
+      return this.frameBodyLines(bodyLines, width, innerWidth);
    }
 
    private getOverlayMaxRenderLines(): number {
@@ -1177,8 +1195,20 @@ class AskComponent extends Container {
       if (maxLines === 2) return [this.renderTopBorder(width), this.renderBottomBorder(width)];
 
       const bodyCapacity = Math.max(0, maxLines - 2);
-      const promptLines = this.buildPromptLines(innerWidth);
-      const helpFullLines = this.helpText.render(innerWidth);
+      let helpFullLines = this.helpText.render(innerWidth);
+      const questionLines = this.buildQuestionLines(innerWidth);
+      const fullContextLines = this.buildFullContextLines(innerWidth);
+      const shouldCollapse = this.mode === "select"
+         ? this.shouldCollapseContextForOverlay(
+            questionLines.length,
+            fullContextLines.length,
+            bodyCapacity,
+            helpFullLines.length,
+         )
+         : this.contextIsCollapsible;
+      this.setContextIsCollapsible(shouldCollapse);
+      helpFullLines = this.helpText.render(innerWidth);
+      const promptLines = this.buildPromptLines(innerWidth, fullContextLines);
       const helpBudget = this.getOverlayHelpBudget(bodyCapacity, helpFullLines.length);
       const contentRows = Math.max(0, bodyCapacity - helpBudget);
 
@@ -1199,9 +1229,10 @@ class AskComponent extends Container {
             modeBudget = Math.max(modeMinRows, modeBudget);
             promptBudget = promptAndModeRows - modeBudget;
 
+            const usefulPromptTarget = this.contextIsCollapsible && !this.contextExpanded ? 3 : 2;
             const usefulPromptRows = Math.min(
                promptLines.length,
-               promptAndModeRows >= modeMinRows + 2 ? 2 : promptMinRows,
+               promptAndModeRows >= modeMinRows + usefulPromptTarget ? usefulPromptTarget : promptMinRows,
             );
             if (promptBudget < usefulPromptRows && modeBudget > modeMinRows) {
                const shiftedRows = Math.min(usefulPromptRows - promptBudget, modeBudget - modeMinRows);
@@ -1236,12 +1267,54 @@ class AskComponent extends Container {
       return this.frameBodyLines(bodyLines.slice(0, bodyCapacity), width, innerWidth);
    }
 
-   private buildPromptLines(width: number): string[] {
+   private buildQuestionLines(width: number): string[] {
+      return this.questionText.render(width);
+   }
+
+   private buildFullContextLines(width: number): string[] {
+      if (!this.contextComponent) return [];
+      return this.contextComponent.render(width);
+   }
+
+   private setContextIsCollapsible(value: boolean): void {
+      if (this.contextIsCollapsible === value) return;
+      this.contextIsCollapsible = value;
+      if (!value) this.contextExpanded = false;
+      this.updateHelpText();
+   }
+
+   private buildContextDisplayLines(fullContextLines: string[], width: number): string[] {
+      if (fullContextLines.length === 0) return [];
+      if (!this.contextIsCollapsible || this.contextExpanded) return fullContextLines;
+      const label = `Context (${fullContextLines.length} lines) — ${CONTEXT_TOGGLE_LABEL} expand`;
+      return [truncateToWidth(this.theme.fg("dim", label), width, "")];
+   }
+
+   private buildPromptLines(width: number, fullContextLines: string[]): string[] {
+      const questionLines = this.buildQuestionLines(width);
+      const contextLines = this.buildContextDisplayLines(fullContextLines, width);
+      const contextSeparator = this.contextIsCollapsible && !this.contextExpanded ? [] : [""];
       return [
-         ...this.titleText.render(width),
-         ...this.questionText.render(width),
-         ...(this.contextComponent ? ["", ...this.contextComponent.render(width)] : []),
+         ...questionLines,
+         ...(contextLines.length > 0 ? [...contextSeparator, ...contextLines] : []),
       ];
+   }
+
+   private shouldCollapseContextForOverlay(
+      questionRows: number,
+      contextRows: number,
+      bodyCapacity: number,
+      helpRows: number,
+   ): boolean {
+      if (contextRows === 0) return false;
+      const helpBudget = this.getOverlayHelpBudget(bodyCapacity, helpRows);
+      const contentRows = Math.max(0, bodyCapacity - helpBudget);
+      const separatorRows = contentRows >= 4 ? 1 : 0;
+      const promptCapacity = Math.max(
+         0,
+         contentRows - separatorRows - this.getMinimumModeRows(),
+      );
+      return questionRows + 1 + contextRows > promptCapacity;
    }
 
    private getOverlayHelpBudget(bodyCapacity: number, renderedHelpRows: number): number {
@@ -1253,7 +1326,7 @@ class AskComponent extends Container {
    private getMinimumModeRows(): number {
       if (this.mode === "freeform") return 5;
       if (this.mode === "comment") return 6;
-      return this.allowMultiple ? 3 : 4;
+      return 3;
    }
 
    private getPreferredModeRows(): number {
@@ -1470,6 +1543,13 @@ class AskComponent extends Container {
       const commentHint = this.allowComment && !this.shortcuts.commentToggle.disabled
          ? literalHint(theme, this.shortcuts.commentToggle.spec, "toggle context")
          : null;
+      const contextHint = this.contextIsCollapsible
+         ? literalHint(
+            theme,
+            CONTEXT_TOGGLE_LABEL,
+            this.contextExpanded ? "collapse context" : "expand context",
+         )
+         : null;
       if (this.mode === "freeform" || this.mode === "comment") {
          const alternateCancelKeys = this.keybindings
             .getKeys("tui.select.cancel")
@@ -1492,6 +1572,7 @@ class AskComponent extends Container {
             literalHint(theme, "↑↓", "navigate"),
             literalHint(theme, "space", "toggle"),
             commentHint,
+            contextHint,
             promptScrollHint,
             overlayHint,
             keybindingHint(theme, this.keybindings, "tui.select.confirm", "submit"),
@@ -1507,6 +1588,7 @@ class AskComponent extends Container {
          const hints = [
             literalHint(theme, "type", "filter"),
             commentHint,
+            contextHint,
             promptScrollHint,
             keybindingHint(theme, this.keybindings, "tui.editor.deleteCharBackward", "erase"),
             literalHint(theme, "↑↓", "navigate"),
@@ -1680,6 +1762,15 @@ class AskComponent extends Container {
       this.tui.requestRender();
    }
 
+   private toggleContext(): boolean {
+      if (this.mode !== "select" || !this.contextIsCollapsible) return false;
+      this.contextExpanded = !this.contextExpanded;
+      this.promptScrollOffset = 0;
+      this.invalidate();
+      this.tui.requestRender();
+      return true;
+   }
+
    private setPromptScrollOffset(nextOffset: number): boolean {
       if (this.displayMode !== "overlay" || this.promptMaxScrollOffset <= 0) return false;
       const clamped = Math.max(0, Math.min(Math.floor(nextOffset), this.promptMaxScrollOffset));
@@ -1723,6 +1814,9 @@ class AskComponent extends Container {
    }
 
    handleInput(data: string): void {
+      if (matchesKey(data, CONTEXT_TOGGLE_KEY) && this.toggleContext()) {
+         return;
+      }
       if (this.handlePromptScrollInput(data)) {
          this.tui.requestRender();
          return;
