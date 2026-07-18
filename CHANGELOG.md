@@ -1,11 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Responsive context collapse for overlay and inline prompts; oversized context preserves the full value while keeping the question and choices visible, and `ctrl+e` toggles the expanded view.
+
 ## [0.13.1](https://github.com/edlsh/pi-ask-user/releases/tag/v0.13.1) - 2026-08-01
 
 ### Fixed
 
 - Multi-select overlay prompts no longer scroll the underlying terminal when the option list exceeds the visible area; scrolling is now contained inside the overlay. Closes #33. (#35)
-
 ## [0.13.0](https://github.com/edlsh/pi-ask-user/releases/tag/v0.13.0) - 2026-07-12
 
 ### Added
