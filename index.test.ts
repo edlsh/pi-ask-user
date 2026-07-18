@@ -201,6 +201,9 @@ beforeAll(() => {
 });
 
 type RegisteredTool = {
+   description: string;
+   promptSnippet?: string;
+   promptGuidelines?: string[];
    execute: (...args: any[]) => Promise<any>;
    renderResult: (result: any, options: any, theme: any) => any;
 };
@@ -252,6 +255,36 @@ describe("ask_user", () => {
    test("registers with executionMode 'sequential' so the agent loop awaits the user's answer before other tool calls run", async () => {
       const tool = await setupTool();
       expect((tool as any).executionMode).toBe("sequential");
+   });
+
+   test("registers synchronized mobile-first prompt guidance", async () => {
+      const tool = await setupTool();
+      const guidance = [
+         tool.description,
+         tool.promptSnippet,
+         ...(tool.promptGuidelines ?? []),
+      ].join("\n");
+
+      expect(guidance).toContain("120 characters");
+      expect(guidance).toContain("240 characters");
+      expect(guidance).toContain("three short lines");
+      expect(guidance).toContain("2-4 options");
+      expect(guidance).toContain("long preamble");
+   });
+
+   test("bundled skill carries the same mobile-first budgets", async () => {
+      const skill = await Bun.file("skills/ask-user/SKILL.md").text();
+      const reference = await Bun.file(
+         "skills/ask-user/references/ask-user-skill-extension-spec.md",
+      ).text();
+
+      for (const text of [skill, reference]) {
+         expect(text).toContain("120 characters");
+         expect(text).toContain("240 characters");
+         expect(text).toContain("three short lines");
+         expect(text).toContain("2-4 options");
+         expect(text).toContain("long preamble");
+      }
    });
 
    test("uses overlay mode by default", async () => {

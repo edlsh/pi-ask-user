@@ -41,11 +41,7 @@ Before asking, gather context from available tools (`read`, `bash`, `exa`, `ref`
 Do not ask the user to decide blind.
 
 ### 3) Synthesize context
-Prepare a short neutral summary (3-7 bullets or short paragraph) covering:
-- current state
-- key constraints
-- trade-offs
-- recommendation (if any)
+Prepare only the decision-critical facts within the mobile-first prompt budget below. Include a recommendation when it materially helps the choice.
 
 ### 4) Ask one focused question
 Call `ask_user` with one decision at a time:
@@ -86,7 +82,22 @@ After attempt 2:
 - If boundary is `high_stakes` or `both`: **stop and mark blocked**. Do not keep asking.
 - If boundary is `ambiguous` only and user says “your call” or equivalent: proceed with the most reversible default and state assumptions explicitly.
 
+## Mobile-first prompt budget
+
+When calling `ask_user`:
+
+- ask one question in one sentence, targeting at most 120 characters;
+- omit `context` when the options are self-explanatory;
+- otherwise include only decision-critical context, targeting at most 240 characters or three short lines;
+- use 2-4 options where practical, with short titles and one-line descriptions;
+- do not restate the question or options in context;
+- do not emit a long preamble immediately before the tool call.
+
+These are generation targets, not reasons to withhold a necessary decision or reject longer resumed-session input.
+
 ## `ask_user` payload quality standard
+
+Apply the mobile-first prompt budget above to every payload.
 
 ### Question quality
 Use:

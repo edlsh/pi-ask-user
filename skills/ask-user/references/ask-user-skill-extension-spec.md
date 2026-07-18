@@ -32,11 +32,24 @@ Use this protocol whenever the trigger matrix says to ask.
 2. **Gather evidence**
    - read code/docs/logs first; do not ask blindly
 3. **Summarize context**
-   - prepare concise trade-off context (3–7 bullets or short paragraph)
+   - prepare only decision-critical facts within the mobile-first prompt budget below
 4. **Ask one focused question**
    - call `ask_user` for one decision at a time
 5. **Commit and proceed**
    - restate chosen option and implement accordingly
+
+### Mobile-first prompt budget
+
+When calling `ask_user`:
+
+- ask one question in one sentence, targeting at most 120 characters;
+- omit `context` when the options are self-explanatory;
+- otherwise include only decision-critical context, targeting at most 240 characters or three short lines;
+- use 2-4 options where practical, with short titles and one-line descriptions;
+- do not restate the question or options in context;
+- do not emit a long preamble immediately before the tool call.
+
+These are generation targets, not reasons to withhold a necessary decision or reject longer resumed-session input.
 
 ### Retry/cancel policy
 

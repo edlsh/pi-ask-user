@@ -1824,24 +1824,29 @@ export default function(pi: ExtensionAPI) {
       name: "ask_user",
       label: "Ask User",
       description:
-         "Ask the user a question with optional multiple-choice answers. Use this to gather information interactively. Ask exactly one focused question per call. Before calling, gather context with tools (read/web/ref) and pass a short summary via the context field.",
+         "Ask the user one focused question with optional choices. Keep it mobile-friendly: use a one-sentence question, optional decision-critical context, and concise options.",
       promptSnippet:
-         "Ask the user one focused question with optional multiple-choice answers to gather information interactively",
+         "Ask one concise, mobile-friendly question with optional multiple-choice answers",
       promptGuidelines: [
-         "Before calling ask_user, gather context with tools (read/web/ref) and pass a short summary via the context field.",
-         "Use ask_user when the user's intent is ambiguous, when a decision requires explicit user input, or when multiple valid options exist.",
-         "Ask exactly one focused question per ask_user call.",
-         "Do not combine multiple numbered, multipart, or unrelated questions into one ask_user prompt.",
+         "Before calling ask_user, gather evidence with tools, but include only decision-critical context in the prompt.",
+         "Keep ask_user mobile-friendly: target one question sentence and at most 120 characters; omit context when options are self-explanatory.",
+         "When context is needed, target at most 240 characters or three short lines. Do not restate the question or options in context.",
+         "Use 2-4 options where practical, with short titles and one-line descriptions.",
+         "Do not emit a long preamble immediately before ask_user.",
+         "Use ask_user when intent is ambiguous, explicit input is required, or multiple valid options exist.",
+         "Ask exactly one focused question per ask_user call; do not combine numbered, multipart, or unrelated questions.",
       ],
       // Block other tool calls in the same assistant turn until the user answers,
       // so the model can't batch ask_user with bash/edit/write and let those run
       // (potentially with side effects) before the user sees the prompt.
       executionMode: "sequential",
       parameters: Type.Object({
-         question: Type.String({ description: "The question to ask the user" }),
+         question: Type.String({
+            description: "One focused question in one sentence; target at most 120 characters",
+         }),
          context: Type.Optional(
             Type.String({
-               description: "Relevant context to show before the question (summary of findings)",
+               description: "Optional decision-critical context; omit when options are self-explanatory and target at most 240 characters or three short lines",
             }),
          ),
          options: Type.Optional(
@@ -1852,9 +1857,9 @@ export default function(pi: ExtensionAPI) {
                // and produce empty options. Plain strings are still accepted at
                // runtime for older transcripts. See issue #22.
                Type.Object({
-                  title: Type.String({ description: "Short title for this option" }),
+                  title: Type.String({ description: "Short title for this option; use 2-4 options where practical" }),
                   description: Type.Optional(
-                     Type.String({ description: "Longer description explaining this option" }),
+                     Type.String({ description: "One-line description explaining the option when needed" }),
                   ),
                }),
                { description: "List of options for the user to choose from" },
