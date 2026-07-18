@@ -1639,15 +1639,58 @@ describe("ask_user", () => {
       expect(rendered).toContain("The alpha option keeps the rollout conservative.");
    });
 
-   test("keeps the top prompt, answers, and help visible when a long overlay prompt overflows", async () => {
+   test.each([
+      { width: 40, rows: 12 },
+      { width: 60, rows: 20 },
+   ])("keeps the question, collapsed context, and a choice visible at $width x $rows", async ({ width, rows }) => {
       const tool = await setupTool();
       let rendered: string[] = [];
-      let capturedOptions: any;
+
+      await tool.execute(
+         "tool-call-id",
+         {
+            question: "Which deployment strategy should we use?",
+            context: "Decision-critical context detail. ".repeat(80),
+            options: ["Alpha", "Beta"],
+         },
+         undefined,
+         undefined,
+         {
+            hasUI: true,
+            ui: {
+               custom: async (factory: any) => {
+                  const component = factory(
+                     { requestRender() { }, terminal: { rows } },
+                     createTheme(),
+                     createKeybindings(),
+                     () => { },
+                  );
+                  rendered = component.render(width);
+                  return null;
+               },
+            },
+         },
+      );
+
+      const joined = rendered.join("\n").replace(/\s+/g, " ");
+      expect(joined).toContain("Which deployment strategy should we");
+      expect(joined).toContain("use?");
+      expect(joined).toContain("Alpha");
+      expect(joined).toContain("Context (");
+      expect(joined).toContain("ctrl+e");
+      expect(joined).not.toContain("Decision-critical context detail.");
+   });
+
+   test("expands and re-collapses long context without losing filtered selection", async () => {
+      const tool = await setupTool();
+      let collapsed = "";
+      let expanded = "";
+      let recollapsed = "";
 
       const result = await tool.execute(
          "tool-call-id",
          {
-            question: "This is a very long question. ".repeat(80),
+            question: "Which option should we use?",
             context: "Context detail. ".repeat(80),
             options: ["Alpha", "Beta"],
          },
@@ -1656,30 +1699,35 @@ describe("ask_user", () => {
          {
             hasUI: true,
             ui: {
-               custom: async (factory: any, options: any) => {
-                  capturedOptions = options;
+               custom: async (factory: any) => {
+                  let resolved: unknown;
                   const component = factory(
                      { requestRender() { }, terminal: { rows: 12 } },
                      createTheme(),
                      createKeybindings(),
-                     () => { },
+                     (value: unknown) => { resolved = value; },
                   );
-                  rendered = component.render(50);
-                  return null;
+                  component.handleInput("b");
+                  collapsed = component.render(50).join("\n");
+                  component.handleInput("ctrl+e");
+                  component.render(50);
+                  component.handleInput("end");
+                  expanded = component.render(50).join("\n");
+                  component.handleInput("ctrl+e");
+                  recollapsed = component.render(50).join("\n");
+                  component.handleInput("enter");
+                  return resolved ?? null;
                },
             },
          },
       );
 
-      const joined = rendered.join("\n");
-      expect(result.isError).not.toBe(true);
-      expect(capturedOptions.overlay).toBe(true);
-      expect(rendered.length).toBeLessThanOrEqual(10);
-      expect(joined).toContain("Question");
-      expect(joined).toContain("This is a very long question.");
-      expect(joined).toContain("Alpha");
-      expect(joined).toContain("PgUp/PgDn prompt");
-      expect(joined).toContain("↓");
+      expect(collapsed).toContain("Context (");
+      expect(expanded).toContain("Context detail.");
+      expect(expanded).toContain("Beta");
+      expect(recollapsed).not.toContain("Context detail.");
+      expect(result.details.response).toEqual({ kind: "selection", selections: ["Beta"] });
+      expect(result.details.context).toContain("Context detail.");
    });
 
    test("scrolls constrained multi-select overlays to the comment and freeform rows", async () => {
@@ -1760,6 +1808,8 @@ describe("ask_user", () => {
                      () => { },
                   );
                   initialRendered = component.render(50);
+                  component.handleInput("ctrl+e");
+                  component.render(50);
                   component.handleInput("end");
                   scrolledRendered = component.render(50);
                   component.handleInput("home");
@@ -1774,7 +1824,8 @@ describe("ask_user", () => {
       expect(initialRendered.join("\n")).toContain("Question line 0");
       expect(scrolledRendered.join("\n")).toContain("Context line 7");
       expect(scrolledRendered.join("\n")).toContain("Alpha");
-      expect(scrolledRendered.join("\n")).toContain("PgUp/PgDn prompt");
+      expect(scrolledRendered.join("\n")).toContain("ctrl+e collapse context");
+      expect(scrolledRendered.join("\n")).toContain("PgUp/P");
       expect(restoredRendered.join("\n")).toContain("Question line 0");
    });
 
@@ -1904,6 +1955,42 @@ describe("ask_user", () => {
 
       expect(result.isError).not.toBe(true);
       expect(rendered.length).toBeGreaterThan(10);
+   });
+
+   test("collapses oversized context in inline mode but leaves short context expanded", async () => {
+      const tool = await setupTool();
+      const render = async (context: string) => {
+         let output = "";
+         await tool.execute(
+            "tool-call-id",
+            { question: "Pick one", context, options: ["Alpha", "Beta"], displayMode: "inline" },
+            undefined,
+            undefined,
+            {
+               hasUI: true,
+               ui: {
+                  custom: async (factory: any) => {
+                     const component = factory(
+                        { requestRender() { }, terminal: { rows: 12 } },
+                        createTheme(),
+                        createKeybindings(),
+                        () => { },
+                     );
+                     output = component.render(40).join("\n");
+                     return null;
+                  },
+               },
+            },
+         );
+         return output;
+      };
+
+      const shortOutput = await render("Short context.");
+      const longOutput = await render("Long context detail. ".repeat(80));
+      expect(shortOutput).toContain("Short context.");
+      expect(shortOutput).not.toContain("Context (");
+      expect(longOutput).toContain("Context (");
+      expect(longOutput).not.toContain("Long context detail.");
    });
 
    test("submits immediately when the comment toggle is off", async () => {
