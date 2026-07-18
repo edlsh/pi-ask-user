@@ -139,7 +139,7 @@ While an `ask_user` prompt is open:
 |-----|--------|
 | `alt+o` (configurable via `overlayToggleKey`) | Hide/show the overlay popup so you can read the agent's prior output. Available in `overlay` mode only. The first time you hide it, a notification reminds you which key brings it back. |
 | `ctrl+g` (configurable via `commentToggleKey`) | Toggle the optional comment/extra-context row (when `allowComment: true`). |
-| `ctrl+e` | Expand or collapse oversized context while choosing an option. |
+| `ctrl+e` | Expand or collapse oversized context while choosing an option. If another configured ask shortcut owns it, the prompt shows `ctrl+x` or `ctrl+y` instead. |
 | `enter` | Confirm the focused option, submit a freeform response, or submit/skip an optional comment. |
 | `esc` | Clear the search filter, exit freeform/comment mode, or cancel the prompt. |
 | `↑` / `↓`, `ctrl+k` / `ctrl+j` | Navigate options. `ctrl+k` / `ctrl+j` (vim-style) work while typing in searchable prompts without disturbing the filter. |
@@ -148,7 +148,7 @@ If you prefer never to see the overlay, set `displayMode: "inline"` per call or 
 
 ### Mobile-sized terminals
 
-The bundled skill asks models to keep questions and decision context concise. If context still wraps beyond the available decision area, `ask_user` collapses it into a one-line summary so the question and at least one choice remain visible. Press `ctrl+e` to expand or collapse the complete context; expanded context remains scrollable with the existing prompt-scroll keys.
+The bundled skill asks models to keep questions and decision context concise. If context still wraps beyond the available decision area, `ask_user` collapses it into a one-line summary so the question and at least one choice remain visible. Press the context key shown in the prompt (`ctrl+e` by default) to expand or collapse the complete context; expanded context remains bounded and scrollable with the existing prompt-scroll keys in both display modes.
 
 ## Known limitations
 

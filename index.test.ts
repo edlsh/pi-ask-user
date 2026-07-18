@@ -1904,6 +1904,96 @@ describe("ask_user", () => {
       expect(longOutput).not.toContain("Long context detail.");
    });
 
+   test("bounds and scrolls expanded context in inline mode", async () => {
+      const tool = await setupTool();
+      let expanded: string[] = [];
+      let scrolled: string[] = [];
+
+      await tool.execute(
+         "tool-call-id",
+         {
+            question: "Pick one",
+            context: Array.from({ length: 20 }, (_, index) => `Inline context line ${index}`).join("\n"),
+            options: ["Alpha", "Beta"],
+            displayMode: "inline",
+         },
+         undefined,
+         undefined,
+         {
+            hasUI: true,
+            ui: {
+               custom: async (factory: any) => {
+                  const component = factory(
+                     { requestRender() { }, terminal: { rows: 12 } },
+                     createTheme(),
+                     createKeybindings(),
+                     () => { },
+                  );
+                  component.render(50);
+                  component.handleInput("ctrl+e");
+                  expanded = component.render(50);
+                  component.handleInput("end");
+                  scrolled = component.render(50);
+                  return null;
+               },
+            },
+         },
+      );
+
+      expect(expanded.length).toBeLessThanOrEqual(10);
+      expect(expanded.join("\n")).toContain("Alpha");
+      expect(scrolled.join("\n")).toContain("Inline context line 19");
+      expect(scrolled.join("\n")).toContain("Alpha");
+      expect(scrolled.join("\n")).toContain("PgUp/P");
+   });
+
+   test("moves the context toggle when a configured shortcut owns ctrl+e", async () => {
+      const tool = await setupTool();
+      let help = "";
+      let commentEnabled = false;
+      let expanded = "";
+
+      await tool.execute(
+         "tool-call-id",
+         {
+            question: "Pick one",
+            context: "Long context detail. ".repeat(80),
+            options: ["Alpha", "Beta"],
+            allowComment: true,
+            commentToggleKey: "ctrl+e",
+         },
+         undefined,
+         undefined,
+         {
+            hasUI: true,
+            ui: {
+               custom: async (factory: any) => {
+                  const component = factory(
+                     { requestRender() { }, terminal: { rows: 12 } },
+                     createTheme(),
+                     createKeybindings(),
+                     () => { },
+                  );
+                  component.render(50);
+                  help = (component as any).helpText.render(120).join("\n");
+                  component.handleInput("ctrl+e");
+                  commentEnabled = (component as any).singleSelectList.isCommentEnabled();
+                  component.handleInput("ctrl+x");
+                  component.render(50);
+                  component.handleInput("end");
+                  expanded = component.render(50).join("\n");
+                  return null;
+               },
+            },
+         },
+      );
+
+      expect(help).toContain("ctrl+e toggle context");
+      expect(help).toContain("ctrl+x expand context");
+      expect(commentEnabled).toBe(true);
+      expect(expanded).toContain("Long context detail.");
+   });
+
    test("submits immediately when the comment toggle is off", async () => {
       const tool = await setupTool();
 

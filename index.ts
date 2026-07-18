@@ -380,8 +380,7 @@ const FREEFORM_SENTINEL = "\u270f\ufe0f Type custom response...";
 const COMMENT_TOGGLE_LABEL = "Add extra context after selection";
 const DEFAULT_OVERLAY_TOGGLE_KEY = "alt+o";
 const DEFAULT_COMMENT_TOGGLE_KEY = "ctrl+g";
-const CONTEXT_TOGGLE_KEY = Key.ctrl("e");
-const CONTEXT_TOGGLE_LABEL = "ctrl+e";
+const CONTEXT_TOGGLE_KEYS = [Key.ctrl("e"), Key.ctrl("x"), Key.ctrl("y")];
 const INLINE_CONTEXT_MAX_ROWS = 3;
 
 // Vim-style aliases for navigating option lists. ctrl+j/k are safe in the
@@ -1174,6 +1173,9 @@ class AskComponent extends Container {
    private renderInlineLayout(width: number, innerWidth: number): string[] {
       const fullContextLines = this.buildFullContextLines(innerWidth);
       this.setContextIsCollapsible(fullContextLines.length > INLINE_CONTEXT_MAX_ROWS);
+      if (this.contextExpanded) {
+         return this.renderOverlayLayout(width, innerWidth);
+      }
       const bodyLines = [
          ...this.buildPromptLines(innerWidth, fullContextLines),
          "",
@@ -1283,10 +1285,19 @@ class AskComponent extends Container {
       this.updateHelpText();
    }
 
+   private getContextToggleKey(): string {
+      const reserved = new Set(
+         [this.shortcuts.overlayToggle, this.shortcuts.commentToggle]
+            .filter((shortcut) => !shortcut.disabled)
+            .map((shortcut) => shortcut.spec),
+      );
+      return CONTEXT_TOGGLE_KEYS.find((key) => !reserved.has(key)) ?? CONTEXT_TOGGLE_KEYS[0]!;
+   }
+
    private buildContextDisplayLines(fullContextLines: string[], width: number): string[] {
       if (fullContextLines.length === 0) return [];
       if (!this.contextIsCollapsible || this.contextExpanded) return fullContextLines;
-      const label = `Context (${fullContextLines.length} lines) — ${CONTEXT_TOGGLE_LABEL} expand`;
+      const label = `Context (${fullContextLines.length} lines) — ${this.getContextToggleKey()} expand`;
       return [truncateToWidth(this.theme.fg("dim", label), width, "")];
    }
 
@@ -1537,7 +1548,7 @@ class AskComponent extends Container {
       const overlayHint = this.displayMode === "overlay" && !this.shortcuts.overlayToggle.disabled
          ? literalHint(theme, this.shortcuts.overlayToggle.spec, "hide")
          : null;
-      const promptScrollHint = this.displayMode === "overlay"
+      const promptScrollHint = this.displayMode === "overlay" || this.contextExpanded
          ? literalHint(theme, "PgUp/PgDn", "prompt")
          : null;
       const commentHint = this.allowComment && !this.shortcuts.commentToggle.disabled
@@ -1546,7 +1557,7 @@ class AskComponent extends Container {
       const contextHint = this.contextIsCollapsible
          ? literalHint(
             theme,
-            CONTEXT_TOGGLE_LABEL,
+            this.getContextToggleKey(),
             this.contextExpanded ? "collapse context" : "expand context",
          )
          : null;
@@ -1772,7 +1783,8 @@ class AskComponent extends Container {
    }
 
    private setPromptScrollOffset(nextOffset: number): boolean {
-      if (this.displayMode !== "overlay" || this.promptMaxScrollOffset <= 0) return false;
+      if (this.displayMode !== "overlay" && !this.contextExpanded) return false;
+      if (this.promptMaxScrollOffset <= 0) return false;
       const clamped = Math.max(0, Math.min(Math.floor(nextOffset), this.promptMaxScrollOffset));
       const changed = clamped !== this.promptScrollOffset;
       this.promptScrollOffset = clamped;
@@ -1780,7 +1792,8 @@ class AskComponent extends Container {
    }
 
    private handlePromptScrollInput(data: string): boolean {
-      if (this.displayMode !== "overlay" || this.promptMaxScrollOffset <= 0) return false;
+      if (this.displayMode !== "overlay" && !this.contextExpanded) return false;
+      if (this.promptMaxScrollOffset <= 0) return false;
       // Prompt scrolling is select-mode only: in freeform/comment modes the
       // editor owns PageUp/PageDown (tui.editor.pageUp/pageDown) for paging
       // through long input, so intercepting them here would steal editor keys.
@@ -1814,7 +1827,7 @@ class AskComponent extends Container {
    }
 
    handleInput(data: string): void {
-      if (matchesKey(data, CONTEXT_TOGGLE_KEY) && this.toggleContext()) {
+      if (matchesKey(data, this.getContextToggleKey() as any) && this.toggleContext()) {
          return;
       }
       if (this.handlePromptScrollInput(data)) {
