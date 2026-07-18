@@ -1248,14 +1248,16 @@ class AskComponent extends Container {
       let helpFullLines = this.helpText.render(innerWidth);
       const questionLines = this.buildQuestionLines(innerWidth);
       const fullContextLines = this.buildFullContextLines(innerWidth);
-      const shouldCollapse = this.mode === "select"
-         ? this.shouldCollapseContextForOverlay(
-            questionLines.length,
-            fullContextLines.length,
-            bodyCapacity,
-            helpFullLines.length,
-         )
-         : this.contextIsCollapsible;
+      const shouldCollapse = this.displayMode === "inline"
+         ? this.contextIsCollapsible
+         : this.mode === "select"
+            ? this.shouldCollapseContextForOverlay(
+               questionLines.length,
+               fullContextLines.length,
+               bodyCapacity,
+               helpFullLines.length,
+            )
+            : this.contextIsCollapsible;
       this.setContextIsCollapsible(shouldCollapse);
       helpFullLines = this.helpText.render(innerWidth);
       const promptLines = this.buildPromptLines(innerWidth, fullContextLines);
