@@ -18,6 +18,14 @@ function wrapPlainText(text: string, width = 80): string[] {
    return lines.length > 0 ? lines : [""];
 }
 
+function truncatePlainText(text: string, width = 80, ellipsis = "…"): string {
+   const safeWidth = Math.max(0, Math.floor(width));
+   if (text.length <= safeWidth) return text;
+   if (!ellipsis) return text.slice(0, safeWidth);
+   if (safeWidth <= ellipsis.length) return ellipsis.slice(0, safeWidth);
+   return text.slice(0, safeWidth - ellipsis.length) + ellipsis;
+}
+
 class MockText {
    constructor(private text: string) { }
    render(width = 80) {
@@ -175,7 +183,10 @@ beforeAll(() => {
          }
       },
       Text: MockText,
-      truncateToWidth: (text: string) => text,
+      // Keep the test harness honest about visible width. Production layout
+      // relies on truncation being width-bounded even when the mock theme is
+      // ANSI-free.
+      truncateToWidth: truncatePlainText,
       wrapTextWithAnsi: (text: string, width = 80) => wrapPlainText(text, width),
       decodeKittyPrintable: (data: string) => (data.length === 1 ? data : undefined),
       fuzzyFilter: <T>(items: T[], query: string, getText: (item: T) => string) => {
@@ -1213,6 +1224,409 @@ describe("ask_user", () => {
       expect(result.isError).not.toBe(true);
       expect(result.details.response).toEqual({ kind: "selection", selections: ["Beta"] });
       expect(result.details.cancelled).toBe(false);
+   });
+
+   test("keeps every multi-select option and control focused within a small overlay viewport", async () => {
+      const tool = await setupTool();
+      const options = [
+         { title: "Alpha authored option title that wraps", description: "First authored option with enough detail to wrap." },
+         { title: "Beta", description: "Second authored option with enough detail to wrap." },
+         { title: "Gamma", description: "Third authored option with enough detail to wrap." },
+         { title: "Delta", description: "Fourth authored option with enough detail to wrap." },
+         { title: "Epsilon", description: "Fifth authored option with enough detail to wrap." },
+      ];
+
+      const result = await tool.execute(
+         "tool-call-id",
+         {
+            question: "Which options should we use?",
+            context: "A long context pane that consumes rows before the multi-select list appears. ".repeat(4),
+            options,
+            allowMultiple: true,
+            allowFreeform: true,
+            allowComment: true,
+         },
+         undefined,
+         undefined,
+         {
+            hasUI: true,
+            ui: {
+               custom: async (factory: any) => {
+                  const tui = { requestRender() { }, terminal: { rows: 12 } };
+                  const component = factory(tui, createTheme(), createKeybindings(), () => { });
+                  component.handleInput("space");
+
+                  for (let index = 0; index < options.length + 2; index++) {
+                     const rendered = component.render(40).join("\n");
+                     const compact = rendered.replace(/[\s│]/g, "");
+                     const focused = index < options.length
+                        ? `→${index + 1}.`
+                        : index === options.length
+                           ? "→[]Addextracontextafterselection"
+                           : "→Typesomething.—Enteracustomresponse";
+                     expect(compact).toContain(focused);
+                     if (index === 0) {
+                        expect(compact).toContain("Alphaauthoredoptiontitlethatwraps");
+                     }
+                     expect(rendered).toContain(`(${index + 1}/7)`);
+                     expect(rendered).not.toContain("…");
+                     if (index < options.length + 1) component.handleInput("down");
+                  }
+
+                  component.handleInput("down");
+                  const finalRendered = component.render(40).join("\n");
+                  expect(finalRendered.replace(/[\s│]/g, "")).toContain(
+                     "→1.[✓]Alphaauthoredoptiontitlethatwraps",
+                  );
+                  return null;
+               },
+            },
+         },
+      );
+
+      expect(result.isError).not.toBe(true);
+   });
+
+   test("keeps a multi-select viewport centered and stable through the first half", async () => {
+      const tool = await setupTool();
+      const options = Array.from({ length: 10 }, (_, index) => ({ title: `Option ${index + 1}` }));
+      const result = await tool.execute(
+         "tool-call-id",
+         {
+            question: "Which options should we use?",
+            options,
+            allowMultiple: true,
+         },
+         undefined,
+         undefined,
+         {
+            hasUI: true,
+            ui: {
+               custom: async (factory: any) => {
+                  const component = factory(
+                     { requestRender() { }, terminal: { rows: 24 } },
+                     createTheme(),
+                     createKeybindings(),
+                     () => { },
+                  );
+                  const list = (component as any).multiSelectList as any;
+                  list.setMaxVisibleRows(6);
+                  // Initial focus is option 1; options 1–5 stay in place for
+                  // focus 1, 2, and 3. Option 4 shifts the window to 2–6.
+                  const content = () => list.render(40)
+                     .slice(0, -1)
+                     .map((line: string) => line.replace("→", " "))
+                     .join("\n");
+                  const first = content();
+                  component.handleInput("down");
+                  expect(content()).toBe(first);
+                  component.handleInput("down");
+                  expect(content()).toBe(first);
+                  component.handleInput("down");
+                  const shifted = list.render(40);
+                  expect(shifted).toHaveLength(6);
+                  expect(shifted.join("\n")).toContain("Option 6");
+                  return null;
+               },
+            },
+         },
+      );
+
+      expect(result.isError).not.toBe(true);
+   });
+
+   test("places variable-height multi-select padding on the anchored edge", async () => {
+      const tool = await setupTool();
+      const result = await tool.execute(
+         "tool-call-id",
+         {
+            question: "Which options should we use?",
+            options: [
+               { title: "Option 1" },
+               { title: "Option 2" },
+               { title: "aaaaaaaaa bbbbbbbbb ccccccccc ddddddddd" },
+               { title: "Option 4" },
+               { title: "Option 5" },
+            ],
+            allowMultiple: true,
+            allowFreeform: false,
+         },
+         undefined,
+         undefined,
+         {
+            hasUI: true,
+            ui: {
+               custom: async (factory: any) => {
+                  const component = factory(
+                     { requestRender() { }, terminal: { rows: 24 } },
+                     createTheme(),
+                     createKeybindings(),
+                     () => { },
+                  );
+                  const list = (component as any).multiSelectList as any;
+                  list.setMaxVisibleRows(6);
+
+                  component.handleInput("down");
+                  const early = list.render(18);
+                  expect(early).toHaveLength(6);
+                  expect(early[0]).toContain("Option 1");
+                  expect(early[1]).toContain("→");
+                  expect(early[1]).toContain("Option 2");
+                  expect(early.slice(2, 5)).toEqual(["", "", ""]);
+                  expect(early[5]).toBe("  (2/5)");
+
+                  component.handleInput("down");
+                  component.handleInput("down");
+                  const late = list.render(18);
+                  expect(late).toHaveLength(6);
+                  expect(late.slice(0, 3)).toEqual(["", "", ""]);
+                  expect(late[3]).toContain("→");
+                  expect(late[3]).toContain("Option 4");
+                  expect(late[4]).toContain("Option 5");
+                  expect(late[5]).toBe("  (4/5)");
+                  return null;
+               },
+            },
+         },
+      );
+
+      expect(result.isError).not.toBe(true);
+   });
+
+   test("recomputes the multi-select viewport when the terminal height changes", async () => {
+      const tool = await setupTool();
+      let smallRows = 0;
+      let largeRows = 0;
+      let shrunkRows = 0;
+      let shrunkOutput: string[] = [];
+
+      const result = await tool.execute(
+         "tool-call-id",
+         {
+            question: "Which options should we use?",
+            options: ["Alpha", "Beta", "Gamma", "Delta", "Epsilon", "Zeta"].map((title) => ({
+               title,
+               description: "A wrapped description for this option.",
+            })),
+            allowMultiple: true,
+            allowFreeform: true,
+            allowComment: true,
+         },
+         undefined,
+         undefined,
+         {
+            hasUI: true,
+            ui: {
+               custom: async (factory: any) => {
+                  const tui = { requestRender() { }, terminal: { rows: 12 } };
+                  const component = factory(tui, createTheme(), createKeybindings(), () => { });
+                  component.render(40);
+                  smallRows = ((component as any).multiSelectList as any).render(40).length;
+
+                  tui.terminal.rows = 24;
+                  component.render(40);
+                  largeRows = ((component as any).multiSelectList as any).render(40).length;
+
+                  // Move focus to the late freeform control before shrinking;
+                  // the focused block must remain in the complete AskComponent output.
+                  for (let index = 0; index < 7; index++) component.handleInput("down");
+                  tui.terminal.rows = 10;
+                  shrunkOutput = component.render(40);
+                  shrunkRows = ((component as any).multiSelectList as any).render(40).length;
+                  return null;
+               },
+            },
+         },
+      );
+
+      expect(result.isError).not.toBe(true);
+      expect(largeRows).toBeGreaterThan(smallRows);
+      expect(shrunkRows).toBeLessThan(largeRows);
+      const compactShrunkOutput = shrunkOutput.join("\n").replace(/[\s│]/g, "");
+      expect(compactShrunkOutput).toContain("→Typesomething.—Enteracustomresponse");
+      expect(shrunkOutput.length).toBeLessThanOrEqual(8);
+   });
+
+   test("allocates twelve rows to tall overlay multi-selects while retaining prompt scrolling", async () => {
+      const tool = await setupTool();
+      const terminalRows = 40;
+      const options = [
+         {
+            title: "Option 1",
+            description: "Option 1 description is deliberately long enough to wrap onto a second row in the list so the preferred pane budget is exercised fully. It keeps the first block taller than the rest.",
+         },
+         { title: "Option 2", description: "Option 2 description remains visible in the expanded list." },
+         { title: "Option 3", description: "Option 3 description remains visible in the expanded list." },
+         { title: "Option 4", description: "Option 4 description demonstrates content beyond the previous eight-row cap." },
+         { title: "Option 5", description: "Option 5 description demonstrates the additional visible content." },
+         { title: "Option 6", description: "Option 6 description is available below the focused rows." },
+         { title: "Option 7", description: "Option 7 description is available below the focused rows." },
+      ];
+      const context = Array.from(
+         { length: 30 },
+         (_, index) => `Prompt context line ${index + 1}: additional details remain reachable while the list is expanded.`,
+      ).join("\n");
+      let initialOutput: string[] = [];
+      let scrolledOutput: string[] = [];
+
+      const result = await tool.execute(
+         "tool-call-id",
+         {
+            question: "Which options should we use?",
+            context,
+            options,
+            allowMultiple: true,
+         },
+         undefined,
+         undefined,
+         {
+            hasUI: true,
+            ui: {
+               custom: async (factory: any) => {
+                  const tui = { requestRender() { }, terminal: { rows: terminalRows } };
+                  const component = factory(tui, createTheme(), createKeybindings(), () => { });
+                  initialOutput = component.render(80);
+
+                  const list = (component as any).multiSelectList as any;
+                  expect(list.maxVisibleRows).toBe(12);
+                  const previousCapRows = (() => {
+                     list.setMaxVisibleRows(8);
+                     return list.render(80);
+                  })();
+                  list.setMaxVisibleRows(12);
+                  const preferredRows = list.render(80);
+                  expect(preferredRows).toHaveLength(12);
+                  expect(preferredRows.length).toBeGreaterThan(previousCapRows.length);
+                  expect(preferredRows.join("\n")).toContain("Option 4 description");
+                  expect(previousCapRows.join("\n")).not.toContain("Option 4 description");
+
+                  expect((component as any).promptMaxScrollOffset).toBeGreaterThan(0);
+                  component.handleInput("end");
+                  scrolledOutput = component.render(80);
+                  return null;
+               },
+            },
+         },
+      );
+
+      expect(result.isError).not.toBe(true);
+      expect(initialOutput.length).toBeLessThanOrEqual(
+         Math.min(terminalRows - 2, Math.max(8, Math.floor(terminalRows * 0.85))),
+      );
+      expect(scrolledOutput.join("\n")).toContain("Prompt context line 30");
+      expect(scrolledOutput.length).toBeLessThanOrEqual(
+         Math.min(terminalRows - 2, Math.max(8, Math.floor(terminalRows * 0.85))),
+      );
+   });
+
+   test("wraps long multi-select titles and narrow descriptions in inline mode", async () => {
+      const tool = await setupTool();
+      let rendered: string[] = [];
+
+      const result = await tool.execute(
+         "tool-call-id",
+         {
+            question: "Pick one",
+            options: [{
+               title: "An authored title that must wrap",
+               description: "narrow description remains readable",
+            }],
+            allowMultiple: true,
+            displayMode: "inline",
+         },
+         undefined,
+         undefined,
+         {
+            hasUI: true,
+            ui: {
+               custom: async (factory: any) => {
+                  const component = factory(
+                     { requestRender() { }, terminal: { rows: 24 } },
+                     createTheme(),
+                     createKeybindings(),
+                     () => { },
+                  );
+                  rendered = component.render(18);
+                  return null;
+               },
+            },
+         },
+      );
+
+      expect(result.isError).not.toBe(true);
+      const compact = rendered.join("\n").replace(/[\s│]/g, "");
+      expect(compact).toContain("Anauthoredtitlethatmustwrap");
+      expect(compact).toContain("narrowdescriptionremainsreadable");
+   });
+
+   test("keeps a focused select control visible in 5- and 6-row overlays", async () => {
+      const tool = await setupTool();
+      const result = await tool.execute(
+         "tool-call-id",
+         {
+            question: "Which option should we use?",
+            context: "Prompt context that would otherwise consume the tiny viewport.",
+            options: ["Alpha", "Beta"],
+            allowMultiple: true,
+            allowComment: true,
+            allowFreeform: true,
+         },
+         undefined,
+         undefined,
+         {
+            hasUI: true,
+            ui: {
+               custom: async (factory: any) => {
+                  const tui = { requestRender() { }, terminal: { rows: 24 } };
+                  const component = factory(tui, createTheme(), createKeybindings(), () => { });
+                  for (const rows of [5, 6]) {
+                     tui.terminal.rows = rows;
+                     const output = component.render(40);
+                     const compact = output.join("\n").replace(/[\s│]/g, "");
+                     expect(compact).toContain("→1.[]Alpha");
+                     expect(output.length).toBeLessThanOrEqual(rows === 5 ? 3 : 4);
+                  }
+                  return null;
+               },
+            },
+         },
+      );
+
+      expect(result.isError).not.toBe(true);
+   });
+
+   test("keeps focused single-select options visible in 5- and 6-row overlays", async () => {
+      const tool = await setupTool();
+      const result = await tool.execute(
+         "tool-call-id",
+         {
+            question: "Which option should we use?",
+            context: "Prompt context that would otherwise consume the tiny viewport.",
+            options: ["Alpha", "Beta"],
+         },
+         undefined,
+         undefined,
+         {
+            hasUI: true,
+            ui: {
+               custom: async (factory: any) => {
+                  const tui = { requestRender() { }, terminal: { rows: 24 } };
+                  const component = factory(tui, createTheme(), createKeybindings(), () => { });
+
+                  for (const rows of [5, 6]) {
+                     tui.terminal.rows = rows;
+                     const output = component.render(40);
+                     const compact = output.join("\n").replace(/[\s│]/g, "");
+                     expect(compact).toContain("→1.Alpha");
+                     expect(output.length).toBeLessThanOrEqual(rows === 5 ? 3 : 4);
+                  }
+                  return null;
+               },
+            },
+         },
+      );
+
+      expect(result.isError).not.toBe(true);
    });
 
    test("keeps single-select search usable when comment toggling is enabled", async () => {

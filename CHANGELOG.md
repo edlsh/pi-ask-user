@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Multi-select overlays now size their variable-height option viewport from the available row budget, keeping focused options and freeform/comment controls visible while navigating and adapting to terminal resizes. Closes #33.
+
 ## [0.13.0](https://github.com/edlsh/pi-ask-user/releases/tag/v0.13.0) - 2026-07-12
 
 ### Added

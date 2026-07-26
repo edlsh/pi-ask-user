@@ -30,7 +30,11 @@ import {
    truncateToWidth,
    wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
-import { renderSingleSelectRows, type QuestionOption } from "./single-select-layout";
+import {
+   getCenteredBlockWindow,
+   renderSingleSelectRows,
+   type QuestionOption,
+} from "./single-select-layout";
 
 import { createRequire } from "node:module";
 const _require = createRequire(import.meta.url);
@@ -463,6 +467,9 @@ class MultiSelectList implements Component {
    private selectedIndex = 0;
    private checked = new Set<number>();
    private commentEnabled = false;
+   // Inline mode retains its historical ten-item window. Overlay mode sets
+   // this to the compositor-provided row budget on every render.
+   private maxVisibleRows?: number;
    private cachedWidth?: number;
    private cachedLines?: string[];
 
@@ -488,6 +495,14 @@ class MultiSelectList implements Component {
 
    public isCommentEnabled(): boolean {
       return this.commentEnabled;
+   }
+
+   setMaxVisibleRows(rows: number): void {
+      const next = Math.max(1, Math.floor(rows));
+      if (next !== this.maxVisibleRows) {
+         this.maxVisibleRows = next;
+         this.invalidate();
+      }
    }
 
    invalidate(): void {
@@ -605,6 +620,87 @@ class MultiSelectList implements Component {
       }
    }
 
+   private wrapBlockText(
+      text: string,
+      width: number,
+      firstPrefix: string,
+      continuationPrefix: string,
+      style: (line: string) => string,
+      firstPrefixWidth = firstPrefix.length,
+   ): string[] {
+      const firstWidth = Math.max(1, width - firstPrefixWidth);
+      const wrapped = wrapTextWithAnsi(text, firstWidth);
+      const lines = wrapped.length > 0 ? wrapped : [""];
+      return lines.map((line, index) => truncateToWidth(
+         `${index === 0 ? firstPrefix : continuationPrefix}${style(line)}`,
+         width,
+         "",
+      ));
+   }
+
+   private buildItemBlocks(width: number): Array<{ itemIndex: number; lines: string[] }> {
+      const theme = this.theme;
+      const count = this.getItemCount();
+      const blocks: Array<{ itemIndex: number; lines: string[] }> = [];
+
+      for (let i = 0; i < count; i++) {
+         const isSelected = i === this.selectedIndex;
+         const prefix = isSelected ? theme.fg("accent", "→") : " ";
+         const lines: string[] = [];
+
+         if (this.isCommentToggleRow(i)) {
+            const checkbox = this.commentEnabled ? theme.fg("success", "[✓]") : theme.fg("dim", "[ ]");
+            const firstPrefix = `${prefix}   ${checkbox} `;
+            const continuationPrefix = " ".repeat(8);
+            const labelStyle = isSelected
+               ? (line: string) => theme.fg("accent", theme.bold(line))
+               : (line: string) => theme.fg("text", theme.bold(line));
+            lines.push(...this.wrapBlockText(COMMENT_TOGGLE_LABEL, width, firstPrefix, continuationPrefix, labelStyle, 8));
+         } else if (this.isFreeformRow(i)) {
+            const firstPrefix = `${prefix}   `;
+            const continuationPrefix = " ".repeat(4);
+            lines.push(...this.wrapBlockText(
+               "Type something. — Enter a custom response",
+               width,
+               firstPrefix,
+               continuationPrefix,
+               (line) => theme.fg("text", theme.bold(line)),
+               4,
+            ));
+         } else {
+            const option = this.options[i];
+            if (!option) continue;
+
+            const checkbox = this.checked.has(i) ? theme.fg("success", "[✓]") : theme.fg("dim", "[ ]");
+            const num = theme.fg("dim", `${i + 1}.`);
+            const titlePrefix = `${prefix} ${num} ${checkbox} `;
+            const titlePrefixWidth = 1 + 1 + (String(i + 1).length + 1) + 1 + 3 + 1;
+            const titleContinuation = " ".repeat(titlePrefixWidth);
+            const titleStyle = isSelected
+               ? (line: string) => theme.fg("accent", theme.bold(line))
+               : (line: string) => theme.fg("text", theme.bold(line));
+            lines.push(...this.wrapBlockText(option.title, width, titlePrefix, titleContinuation, titleStyle, titlePrefixWidth));
+
+            if (option.description) {
+               // Keep one content column even on pathological narrow widths;
+               // the indentation yields to the available width rather than
+               // forcing a ten-column minimum that truncates every chunk.
+               const indentWidth = Math.min(6, Math.max(0, width - 1));
+               const indent = " ".repeat(indentWidth);
+               const wrapWidth = Math.max(1, width - indentWidth);
+               const wrapped = wrapTextWithAnsi(option.description, wrapWidth);
+               for (const line of wrapped) {
+                  lines.push(truncateToWidth(indent + theme.fg("muted", line), width, ""));
+               }
+            }
+         }
+
+         blocks.push({ itemIndex: i, lines });
+      }
+
+      return blocks;
+   }
+
    render(width: number): string[] {
       if (this.cachedLines && this.cachedWidth === width) {
          return this.cachedLines;
@@ -612,69 +708,58 @@ class MultiSelectList implements Component {
 
       const theme = this.theme;
       const count = this.getItemCount();
-      const maxVisible = Math.min(count, 10);
-
       if (count === 0) {
          this.cachedLines = [theme.fg("warning", "No options")];
          this.cachedWidth = width;
          return this.cachedLines;
       }
 
-      const startIndex = Math.max(0, Math.min(this.selectedIndex - Math.floor(maxVisible / 2), count - maxVisible));
-      const endIndex = Math.min(startIndex + maxVisible, count);
+      this.selectedIndex = Math.max(0, Math.min(this.selectedIndex, count - 1));
+      const blocks = this.buildItemBlocks(width);
+      const allRows = blocks.flatMap((block) => block.lines);
 
-      const lines: string[] = [];
-
-      for (let i = startIndex; i < endIndex; i++) {
-         const isSelected = i === this.selectedIndex;
-         const prefix = isSelected ? theme.fg("accent", "→") : " ";
-
-         if (this.isCommentToggleRow(i)) {
-            const checkbox = this.commentEnabled ? theme.fg("success", "[✓]") : theme.fg("dim", "[ ]");
-            const label = isSelected
-               ? theme.fg("accent", theme.bold(COMMENT_TOGGLE_LABEL))
-               : theme.fg("text", theme.bold(COMMENT_TOGGLE_LABEL));
-            lines.push(truncateToWidth(`${prefix}   ${checkbox} ${label}`, width, ""));
-            continue;
+      if (this.maxVisibleRows === undefined) {
+         const maxItems = Math.min(count, 10);
+         const startIndex = Math.max(0, Math.min(this.selectedIndex - Math.floor(maxItems / 2), count - maxItems));
+         const endIndex = Math.min(startIndex + maxItems, count);
+         const lines = blocks.slice(startIndex, endIndex).flatMap((block) => block.lines);
+         if (startIndex > 0 || endIndex < count) {
+            lines.push(theme.fg("dim", truncateToWidth(`  (${this.selectedIndex + 1}/${count})`, width, "")));
          }
-
-         if (this.isFreeformRow(i)) {
-            const label = theme.fg("text", theme.bold("Type something."));
-            const desc = theme.fg("muted", "Enter a custom response");
-            const line = `${prefix}   ${label} ${theme.fg("dim", "—")} ${desc}`;
-            lines.push(truncateToWidth(line, width, ""));
-            continue;
-         }
-
-         const option = this.options[i];
-         if (!option) continue;
-
-         const checkbox = this.checked.has(i) ? theme.fg("success", "[✓]") : theme.fg("dim", "[ ]");
-         const num = theme.fg("dim", `${i + 1}.`);
-         const title = isSelected
-            ? theme.fg("accent", theme.bold(option.title))
-            : theme.fg("text", theme.bold(option.title));
-
-         const firstLine = `${prefix} ${num} ${checkbox} ${title}`;
-         lines.push(truncateToWidth(firstLine, width, ""));
-
-         if (option.description) {
-            const indent = "      ";
-            const wrapWidth = Math.max(10, width - indent.length);
-            const wrapped = wrapTextWithAnsi(option.description, wrapWidth);
-            for (const w of wrapped) {
-               lines.push(truncateToWidth(indent + theme.fg("muted", w), width, ""));
-            }
-         }
+         this.cachedWidth = width;
+         this.cachedLines = lines;
+         return lines;
       }
 
-      if (startIndex > 0 || endIndex < count) {
-         lines.push(theme.fg("dim", truncateToWidth(`  (${this.selectedIndex + 1}/${count})`, width, "")));
+      const maxRows = Math.max(1, this.maxVisibleRows);
+      if (allRows.length <= maxRows) {
+         this.cachedWidth = width;
+         this.cachedLines = allRows;
+         return allRows;
       }
 
+      const indicator = theme.fg("dim", truncateToWidth(`  (${this.selectedIndex + 1}/${count})`, width, ""));
+      const window = getCenteredBlockWindow(blocks, this.selectedIndex, maxRows);
+      const availableRows = window.contentRows;
+      const selectedBlock = blocks[this.selectedIndex] ?? blocks[0];
+      if (!selectedBlock) return [];
+
+      // Keep a wrapped block whole whenever it fits. If the focused block is
+      // itself taller than the content budget, show its leading rows so focus
+      // remains identifiable, then keep the viewport's height stable.
+      let visibleRows = blocks.slice(window.startIndex, window.endIndex).flatMap((block) => block.lines);
+      if (selectedBlock.lines.length >= availableRows) {
+         visibleRows = visibleRows.slice(0, availableRows);
+      } else {
+         visibleRows.unshift(...Array.from({ length: window.paddingBeforeRows }, () => ""));
+         visibleRows.push(...Array.from({ length: window.paddingAfterRows }, () => ""));
+      }
+      while (visibleRows.length < availableRows) visibleRows.push("");
+      if (maxRows > 1) visibleRows.push(indicator);
+      visibleRows = visibleRows.slice(0, maxRows);
       this.cachedWidth = width;
-      this.cachedLines = lines;
-      return lines;
+      this.cachedLines = visibleRows;
+      return visibleRows;
    }
 }
 
@@ -826,10 +911,15 @@ class WrappedSingleSelectList implements Component {
    private buildListLines(width: number, filteredOptions: QuestionOption[], hideDescriptions = false): string[] {
       const lines: string[] = [];
       const count = this.getItemCount(filteredOptions);
+      // With one row available, the focused option/control is more useful than
+      // the filter header. Keep the header and search status at normal heights.
+      const compact = this.maxVisibleRows === 1;
       const searchValue = this.searchQuery ? this.theme.fg("text", this.searchQuery) : this.theme.fg("dim", "type to filter");
-      lines.push(truncateToWidth(`${this.theme.fg("accent", "Filter:")} ${searchValue}`, width, ""));
+      if (!compact) {
+         lines.push(truncateToWidth(`${this.theme.fg("accent", "Filter:")} ${searchValue}`, width, ""));
+      }
 
-      if (this.searchQuery && filteredOptions.length === 0) {
+      if (this.searchQuery && filteredOptions.length === 0 && (!compact || count === 0)) {
          lines.push(truncateToWidth(this.theme.fg("warning", "No matching options"), width, ""));
       }
 
@@ -1179,7 +1269,12 @@ class AskComponent extends Container {
       const bodyCapacity = Math.max(0, maxLines - 2);
       const promptLines = this.buildPromptLines(innerWidth);
       const helpFullLines = this.helpText.render(innerWidth);
-      const helpBudget = this.getOverlayHelpBudget(bodyCapacity, helpFullLines.length);
+      // A select row is the actionable surface. On 5/6-row terminals the
+      // body can hold only one or two lines, so sacrifice help before leaving
+      // the user with no focused control at all.
+      const helpBudget = this.mode === "select" && bodyCapacity <= 2
+         ? 0
+         : this.getOverlayHelpBudget(bodyCapacity, helpFullLines.length);
       const contentRows = Math.max(0, bodyCapacity - helpBudget);
 
       let promptBudget = 0;
@@ -1189,24 +1284,33 @@ class AskComponent extends Container {
       if (this.mode === "select") {
          separatorRows = contentRows >= 4 ? 1 : 0;
          const promptAndModeRows = Math.max(0, contentRows - separatorRows);
-         promptBudget = promptAndModeRows;
 
-         if (promptAndModeRows > 0) {
-            const promptMinRows = promptLines.length > 0 ? 1 : 0;
-            const maximumModeRows = Math.max(0, promptAndModeRows - promptMinRows);
-            const modeMinRows = Math.min(this.getMinimumModeRows(), maximumModeRows);
-            modeBudget = Math.min(this.getPreferredModeRows(), maximumModeRows);
-            modeBudget = Math.max(modeMinRows, modeBudget);
-            promptBudget = promptAndModeRows - modeBudget;
+         if (bodyCapacity <= 2) {
+            // Keep at least one focused option/control visible. Prompt and
+            // help are expendable at this size and reappear at normal heights.
+            promptBudget = 0;
+            modeBudget = promptAndModeRows;
+            separatorRows = 0;
+         } else {
+            promptBudget = promptAndModeRows;
 
-            const usefulPromptRows = Math.min(
-               promptLines.length,
-               promptAndModeRows >= modeMinRows + 2 ? 2 : promptMinRows,
-            );
-            if (promptBudget < usefulPromptRows && modeBudget > modeMinRows) {
-               const shiftedRows = Math.min(usefulPromptRows - promptBudget, modeBudget - modeMinRows);
-               modeBudget -= shiftedRows;
-               promptBudget += shiftedRows;
+            if (promptAndModeRows > 0) {
+               const promptMinRows = promptLines.length > 0 ? 1 : 0;
+               const maximumModeRows = Math.max(0, promptAndModeRows - promptMinRows);
+               const modeMinRows = Math.min(this.getMinimumModeRows(), maximumModeRows);
+               modeBudget = Math.min(this.getPreferredModeRows(), maximumModeRows);
+               modeBudget = Math.max(modeMinRows, modeBudget);
+               promptBudget = promptAndModeRows - modeBudget;
+
+               const usefulPromptRows = Math.min(
+                  promptLines.length,
+                  promptAndModeRows >= modeMinRows + 2 ? 2 : promptMinRows,
+               );
+               if (promptBudget < usefulPromptRows && modeBudget > modeMinRows) {
+                  const shiftedRows = Math.min(usefulPromptRows - promptBudget, modeBudget - modeMinRows);
+                  modeBudget -= shiftedRows;
+                  promptBudget += shiftedRows;
+               }
             }
          }
       } else {
@@ -1259,7 +1363,7 @@ class AskComponent extends Container {
    private getPreferredModeRows(): number {
       if (this.mode === "freeform") return 10;
       if (this.mode === "comment") return 11;
-      return 8;
+      return 12;
    }
 
    private renderModeLines(width: number, budget: number): string[] {
@@ -1267,9 +1371,15 @@ class AskComponent extends Container {
       if (safeBudget <= 0) return [];
 
       if (this.mode === "select") {
-         if (!this.allowMultiple) {
-            this.ensureSingleSelectList().setMaxVisibleRows(Math.max(1, safeBudget));
+         if (this.allowMultiple) {
+            this.ensureMultiSelectList().setMaxVisibleRows(Math.max(1, safeBudget));
+            // Multi-select owns its row-budget-aware viewport so variable-height
+            // descriptions and the focused control are never clipped by a
+            // generic outer ellipsis.
+            return this.modeContainer.render(width);
          }
+
+         this.ensureSingleSelectList().setMaxVisibleRows(Math.max(1, safeBudget));
          return this.limitLines(this.modeContainer.render(width), safeBudget, width, true);
       }
 

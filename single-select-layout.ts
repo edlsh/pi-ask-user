@@ -8,6 +8,149 @@ export interface AnnotatedRow {
 	selected: boolean;
 }
 
+export interface CenteredBlockWindow {
+	startIndex: number;
+	endIndex: number;
+	contentRows: number;
+	paddingBeforeRows: number;
+	paddingAfterRows: number;
+	/** True when the returned window is a viewport over overflowing content. */
+	overflow: boolean;
+}
+
+/**
+ * Pick a contiguous, block-aligned window around the focused item. Blocks are
+ * kept whole whenever they fit; an oversized focused block is handled by the
+ * caller by clipping its rows to `contentRows`.
+ *
+ * The final row of an overflowing viewport is reserved for the position
+ * indicator, matching the select-list rendering in both modes.
+ */
+export function getCenteredBlockWindow(
+	blocks: ReadonlyArray<{ lines: readonly unknown[] }>,
+	selectedIndex: number,
+	maxRows: number,
+): CenteredBlockWindow {
+	const safeMaxRows = Math.max(1, Math.floor(maxRows));
+	const totalRows = blocks.reduce((sum, block) => sum + block.lines.length, 0);
+	if (totalRows <= safeMaxRows) {
+		return {
+			startIndex: 0,
+			endIndex: blocks.length,
+			contentRows: totalRows,
+			paddingBeforeRows: 0,
+			paddingAfterRows: 0,
+			overflow: false,
+		};
+	}
+
+	const contentRows = safeMaxRows > 1 ? safeMaxRows - 1 : 1;
+	if (blocks.length === 0) {
+		return {
+			startIndex: 0,
+			endIndex: 0,
+			contentRows,
+			paddingBeforeRows: 0,
+			paddingAfterRows: contentRows,
+			overflow: true,
+		};
+	}
+
+	const focusedIndex = Math.max(0, Math.min(selectedIndex, blocks.length - 1));
+	const focusedRows = blocks[focusedIndex]?.lines.length ?? 0;
+	if (focusedRows >= contentRows) {
+		return {
+			startIndex: focusedIndex,
+			endIndex: focusedIndex + 1,
+			contentRows,
+			paddingBeforeRows: 0,
+			paddingAfterRows: 0,
+			overflow: true,
+		};
+	}
+
+	const rowPrefix = [0];
+	for (const block of blocks) rowPrefix.push(rowPrefix[rowPrefix.length - 1]! + block.lines.length);
+	const viewportCenter = contentRows / 2;
+	const focusedCenter = rowPrefix[focusedIndex]! + focusedRows / 2;
+
+	// At the top and bottom boundaries, preserving the edge anchor takes
+	// precedence over filling every content row. This prevents a tall adjacent
+	// block from moving focus past the viewport midpoint prematurely.
+	if (focusedCenter <= viewportCenter) {
+		let endIndex = 0;
+		while (endIndex < blocks.length && rowPrefix[endIndex + 1]! <= contentRows) endIndex++;
+		const usedRows = rowPrefix[endIndex]!;
+		return {
+			startIndex: 0,
+			endIndex,
+			contentRows,
+			paddingBeforeRows: 0,
+			paddingAfterRows: contentRows - usedRows,
+			overflow: true,
+		};
+	}
+
+	if (focusedCenter >= totalRows - viewportCenter) {
+		let startIndex = blocks.length;
+		while (startIndex > 0 && totalRows - rowPrefix[startIndex - 1]! <= contentRows) startIndex--;
+		const usedRows = totalRows - rowPrefix[startIndex]!;
+		return {
+			startIndex,
+			endIndex: blocks.length,
+			contentRows,
+			paddingBeforeRows: contentRows - usedRows,
+			paddingAfterRows: 0,
+			overflow: true,
+		};
+	}
+
+	type Candidate = {
+		startIndex: number;
+		endIndex: number;
+		usedRows: number;
+		paddingBeforeRows: number;
+		distance: number;
+	};
+	let best: Candidate | undefined;
+
+	// In the middle, choose a conventional centered, contiguous full-block
+	// window. Unavoidable slack participates in centering before occupied-row
+	// count, so variable-height neighbors cannot pull focus off its anchor.
+	for (let startIndex = 0; startIndex <= focusedIndex; startIndex++) {
+		for (let endIndex = focusedIndex + 1; endIndex <= blocks.length; endIndex++) {
+			const usedRows = rowPrefix[endIndex]! - rowPrefix[startIndex]!;
+			if (usedRows > contentRows) break;
+
+			const slack = contentRows - usedRows;
+			const focusedCenterInWindow = rowPrefix[focusedIndex]! - rowPrefix[startIndex]! + focusedRows / 2;
+			const idealPadding = viewportCenter - focusedCenterInWindow;
+			const paddingBeforeRows = Math.max(0, Math.min(slack, Math.round(idealPadding)));
+			const distance = Math.abs(focusedCenterInWindow + paddingBeforeRows - viewportCenter);
+			if (
+				!best ||
+				distance < best.distance - Number.EPSILON ||
+				(Math.abs(distance - best.distance) <= Number.EPSILON && usedRows > best.usedRows) ||
+				(Math.abs(distance - best.distance) <= Number.EPSILON &&
+					usedRows === best.usedRows && startIndex < best.startIndex)
+			) {
+				best = { startIndex, endIndex, usedRows, paddingBeforeRows, distance };
+			}
+		}
+	}
+
+	const usedRows = best?.usedRows ?? focusedRows;
+	const paddingBeforeRows = best?.paddingBeforeRows ?? 0;
+	return {
+		startIndex: best?.startIndex ?? focusedIndex,
+		endIndex: best?.endIndex ?? focusedIndex + 1,
+		contentRows,
+		paddingBeforeRows,
+		paddingAfterRows: contentRows - usedRows - paddingBeforeRows,
+		overflow: true,
+	};
+}
+
 export interface RenderSingleSelectRowsParams {
 	options: QuestionOption[];
 	selectedIndex: number;
@@ -159,45 +302,22 @@ export function renderSingleSelectRows({
 		return allRows;
 	}
 
+	const window = getCenteredBlockWindow(blocks, selectedIndex, maxRows);
 	const safeMaxRows = Math.max(1, Math.floor(maxRows));
+	const availableRows = window.contentRows;
 	const selectedBlock = blocks[selectedIndex] ?? blocks[0];
 	if (!selectedBlock) return [];
 
-	const indicator = `  (${selectedIndex + 1}/${itemCount})`;
-	const availableRows = safeMaxRows > 1 ? safeMaxRows - 1 : 1;
-
+	const visible = flatten(blocks.slice(window.startIndex, window.endIndex), selectedIndex);
 	if (selectedBlock.lines.length >= availableRows) {
-		const visible = selectedBlock.lines.slice(0, availableRows).map((line) => ({
-			line,
-			selected: true,
-		}));
-		if (safeMaxRows > 1) visible.push({ line: indicator, selected: false });
-		return visible.slice(0, safeMaxRows);
+		// An individual wrapped block can be taller than the pane. Keep the
+		// focused block identifiable while reserving the indicator row.
+		visible.splice(availableRows);
+	} else {
+		visible.unshift(...Array.from({ length: window.paddingBeforeRows }, () => ({ line: "", selected: false })));
+		visible.push(...Array.from({ length: window.paddingAfterRows }, () => ({ line: "", selected: false })));
 	}
-
-	let start = selectedIndex;
-	let end = selectedIndex + 1;
-	let usedRows = selectedBlock.lines.length;
-
-	while (true) {
-		const nextCanFit = end < blocks.length && usedRows + blocks[end]!.lines.length <= availableRows;
-		if (nextCanFit) {
-			usedRows += blocks[end]!.lines.length;
-			end += 1;
-			continue;
-		}
-
-		const prevCanFit = start > 0 && usedRows + blocks[start - 1]!.lines.length <= availableRows;
-		if (prevCanFit) {
-			start -= 1;
-			usedRows += blocks[start]!.lines.length;
-			continue;
-		}
-
-		break;
-	}
-
-	const visible = flatten(blocks.slice(start, end), selectedIndex);
-	visible.push({ line: indicator, selected: false });
+	while (visible.length < availableRows) visible.push({ line: "", selected: false });
+	if (safeMaxRows > 1) visible.push({ line: `  (${selectedIndex + 1}/${itemCount})`, selected: false });
 	return visible.slice(0, safeMaxRows);
 }

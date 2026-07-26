@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { renderSingleSelectRows } from "./single-select-layout";
+import { getCenteredBlockWindow, renderSingleSelectRows } from "./single-select-layout";
 
 describe("renderSingleSelectRows", () => {
 	test("wraps long option titles instead of truncating them away", () => {
@@ -104,5 +104,96 @@ describe("renderSingleSelectRows", () => {
 			expect(row.line).not.toContain("Gamma");
 		}
 		expect(nonSelectedRows.length).toBeGreaterThan(0);
+	});
+
+	test("keeps an equal-height viewport stable until focus reaches its center", () => {
+		const options = Array.from({ length: 10 }, (_, index) => ({ title: `Option ${index + 1}` }));
+		const render = (selectedIndex: number) => renderSingleSelectRows({
+			options,
+			selectedIndex,
+			width: 40,
+			allowFreeform: false,
+			maxRows: 6,
+		}).map((row) => row.line);
+
+		const content = (selectedIndex: number) => render(selectedIndex)
+			.slice(0, -1)
+			.map((line) => line.replace("→", " "))
+			.join("\n");
+		const first = content(0);
+		expect(content(1)).toBe(first);
+		expect(content(2)).toBe(first);
+		expect(content(3)).not.toBe(first);
+		expect(content(3)).toContain("Option 6");
+		for (let selectedIndex = 0; selectedIndex < options.length; selectedIndex++) {
+			expect(render(selectedIndex)).toHaveLength(6);
+		}
+	});
+
+	test("anchors variable-height helper windows at the top and bottom boundaries", () => {
+		const blocks = [1, 1, 4, 1, 1].map((height) => ({ lines: Array.from({ length: height }) }));
+
+		expect(getCenteredBlockWindow(blocks, 1, 6)).toEqual({
+			startIndex: 0,
+			endIndex: 2,
+			contentRows: 5,
+			paddingBeforeRows: 0,
+			paddingAfterRows: 3,
+			overflow: true,
+		});
+		expect(getCenteredBlockWindow(blocks, 2, 6)).toEqual({
+			startIndex: 1,
+			endIndex: 3,
+			contentRows: 5,
+			paddingBeforeRows: 0,
+			paddingAfterRows: 0,
+			overflow: true,
+		});
+		expect(getCenteredBlockWindow(blocks, 3, 6)).toEqual({
+			startIndex: 3,
+			endIndex: 5,
+			contentRows: 5,
+			paddingBeforeRows: 3,
+			paddingAfterRows: 0,
+			overflow: true,
+		});
+	});
+
+	test("places variable-height single-select padding on the anchored edge", () => {
+		const options = [
+			{ title: "Option 1" },
+			{ title: "Option 2" },
+			{ title: "aaaaaaaa bbbbbbbb cccccccc dddddddd" },
+			{ title: "Option 4" },
+			{ title: "Option 5" },
+		];
+		const render = (selectedIndex: number) => renderSingleSelectRows({
+			options,
+			selectedIndex,
+			width: 12,
+			allowFreeform: false,
+			maxRows: 6,
+		});
+
+		const early = render(1);
+		expect(early).toHaveLength(6);
+		expect(early[0]?.line).toContain("Option 1");
+		expect(early[1]).toMatchObject({ selected: true });
+		expect(early[1]?.line).toContain("Option 2");
+		expect(early.slice(2, 5).map((row) => row.line)).toEqual(["", "", ""]);
+		expect(early[5]?.line).toBe("  (2/5)");
+
+		const middle = render(2);
+		expect(middle).toHaveLength(6);
+		expect(middle.filter((row) => row.selected)).toHaveLength(4);
+		expect(middle.slice(0, 5).map((row) => row.line).join(" ")).toContain("dddddddd");
+
+		const late = render(3);
+		expect(late).toHaveLength(6);
+		expect(late.slice(0, 3).map((row) => row.line)).toEqual(["", "", ""]);
+		expect(late[3]).toMatchObject({ selected: true });
+		expect(late[3]?.line).toContain("Option 4");
+		expect(late[4]?.line).toContain("Option 5");
+		expect(late[5]?.line).toBe("  (4/5)");
 	});
 });
