@@ -11,18 +11,19 @@ High-quality video: [ask-user-demo.mp4](./media/ask-user-demo.mp4)
 ## Features
 
 - Searchable single-select option lists with wrapped titles and descriptions
-- Responsive split-pane details preview on wide terminals with single-column fallback on narrow terminals
+- Responsive split-pane details preview on wide terminals, with a persistent single-column preference
 - Multi-select option lists
 - Optional freeform responses
 - User-toggleable extra context on structured selections
 - Context display support
-- Mobile-first question guidance plus responsive context collapse that keeps the question and choices visible on small terminals without discarding full context
+- Responsive context collapse that keeps the question and choices visible on small terminals without discarding full context
 - Configurable display mode: `overlay` (modal, default) or `inline` (rendered directly in the flow)
 - Runtime overlay toggle: press the configured overlay-toggle key (`alt+o` by default, configurable per call or via env var) while the prompt is open to temporarily hide/show the popup so you can read prior agent output, then press it again to bring it back
 - Pi-TUI-aligned keybinding and editor behavior
 - Custom TUI rendering for tool calls and results
 - System prompt integration via `promptSnippet` and `promptGuidelines`
 - Optional timeout for auto-dismiss in both overlay and fallback input modes
+- `herdr:blocked` lifecycle events while waiting for interactive input
 - Structured `details` on all results for session state reconstruction
 - Graceful fallback when interactive UI is unavailable
 - Bundled `ask-user` skill for mandatory decision-gating in high-stakes or ambiguous tasks
@@ -67,6 +68,7 @@ The registered tool name is:
 | `allowFreeform` | `boolean?` | `true` | Add a "Type something" freeform option |
 | `allowComment` | `boolean?` | env var or `false` | Expose a user-toggleable extra-context option in the custom UI (`ctrl+g` or the toggle row) and collect an optional comment in fallback dialogs |
 | `displayMode` | `"overlay" \| "inline"?` | env var or `"overlay"` | Controls custom UI rendering: `overlay` shows the centered modal (current behavior), `inline` renders without overlay framing |
+| `singleSelectLayout` | `"auto" \| "list"?` | env var or `"auto"` | Use the responsive details pane automatically or always render descriptions below their options |
 | `overlayToggleKey` | `string?` | env var or `"alt+o"` | Shortcut for hiding/showing the overlay popup (overlay mode only). Pi-TUI key spec, e.g. `"alt+o"`, `"ctrl+shift+h"`. Pass `"off"` to disable. |
 | `commentToggleKey` | `string?` | env var or `"ctrl+g"` | Shortcut for toggling the optional comment/extra-context row when `allowComment: true`. Pass `"off"` to disable. |
 | `timeout` | `number?` | — | Auto-dismiss after N ms and return `null` if the prompt times out |
@@ -96,6 +98,7 @@ Configure your defaults globally by setting these in your shell profile (`~/.zsh
 
 ```bash
 export PI_ASK_USER_DISPLAY_MODE=inline
+export PI_ASK_USER_SINGLE_SELECT_LAYOUT=list
 export PI_ASK_USER_ALLOW_COMMENT=true
 export PI_ASK_USER_OVERLAY_TOGGLE_KEY=alt+h
 export PI_ASK_USER_COMMENT_TOGGLE_KEY=alt+c
@@ -112,6 +115,16 @@ Effective order:
 3. Fallback default: `"overlay"`
 
 Unrecognised values are silently ignored and fall back to `"overlay"`.
+
+### Single-select layout
+
+Effective order:
+
+1. Per-call `singleSelectLayout` parameter (if provided)
+2. `PI_ASK_USER_SINGLE_SELECT_LAYOUT` (when set to `list`)
+3. Fallback default: `auto`
+
+`auto` shows the details pane on wide terminals. `list` keeps descriptions below their options at every width.
 
 ### Optional comments
 
@@ -148,7 +161,11 @@ If you prefer never to see the overlay, set `displayMode: "inline"` per call or 
 
 ### Mobile-sized terminals
 
-The bundled skill asks models to keep questions and decision context concise. If context still wraps beyond the available decision area, `ask_user` collapses it into a one-line summary so the question and at least one choice remain visible. Press the context key shown in the prompt (`ctrl+e` by default) to expand or collapse the complete context; expanded context remains bounded and scrollable with the existing prompt-scroll keys in both display modes.
+If context wraps beyond the available decision area, `ask_user` collapses it into a one-line summary so the question and at least one choice remain visible. Press the context key shown in the prompt (`ctrl+e` by default) to expand or collapse the complete context; expanded context remains bounded and scrollable with the existing prompt-scroll keys in both display modes.
+
+### Waiting lifecycle event
+
+While an interactive prompt is open, the extension emits `herdr:blocked` with `{ active: true, label: "Waiting for user response" }`. It emits `{ active: false }` in `finally`, including cancellation and error paths. Hosts without a listener are unaffected.
 
 ## Known limitations
 

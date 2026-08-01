@@ -248,6 +248,23 @@ function createTheme() {
    };
 }
 
+function renderSingleSelectFromFactory(factory: unknown, width = 120): string {
+   // The custom UI callback is untyped in the test harness; narrow only the surface exercised here.
+   const createComponent = factory as unknown as (
+      tui: unknown,
+      theme: unknown,
+      keybindings: unknown,
+      done: () => void,
+   ) => { singleSelectList: { render: (renderWidth: number) => string[] } };
+   const component = createComponent(
+      { requestRender() { }, terminal: { rows: 24 } },
+      createTheme(),
+      createKeybindings(),
+      () => { },
+   );
+   return component.singleSelectList.render(width).join("\n");
+}
+
 describe("ask_user", () => {
    test("registers with executionMode 'sequential' so the agent loop awaits the user's answer before other tool calls run", async () => {
       const tool = await setupTool();
@@ -1562,6 +1579,70 @@ describe("ask_user", () => {
       expect(result.isError).not.toBe(true);
       expect(rendered).toContain("## Alpha");
       expect(rendered).toContain("The alpha option keeps the rollout conservative.");
+   });
+
+   test("keeps wide single-select prompts in one column when requested", async () => {
+      const tool = await setupTool();
+      let rendered = "";
+
+      const result = await tool.execute(
+         "tool-call-id",
+         {
+            question: "Which option should we use?",
+            options: [
+               { title: "Alpha", description: "The alpha option stays below its title." },
+               { title: "Beta", description: "The beta option stays below its title." },
+            ],
+            singleSelectLayout: "list",
+         },
+         undefined,
+         undefined,
+         {
+            hasUI: true,
+            ui: {
+               custom: async (factory: unknown) => {
+                  rendered = renderSingleSelectFromFactory(factory);
+                  return null;
+               },
+            },
+         },
+      );
+
+      expect(result.isError).not.toBe(true);
+      expect(rendered).toContain("The alpha option stays below its title.");
+      expect(rendered).not.toContain("## Alpha");
+      expect(rendered).not.toContain(" │ ");
+   });
+
+   test("uses PI_ASK_USER_SINGLE_SELECT_LAYOUT unless the call overrides it", async () => {
+      stubEnv("PI_ASK_USER_SINGLE_SELECT_LAYOUT", "list");
+      const tool = await setupTool();
+      const render = async (singleSelectLayout?: "auto") => {
+         let output = "";
+         await tool.execute(
+            "tool-call-id",
+            {
+               question: "Which option should we use?",
+               options: [{ title: "Alpha", description: "Alpha details." }],
+               singleSelectLayout,
+            },
+            undefined,
+            undefined,
+            {
+               hasUI: true,
+               ui: {
+                  custom: async (factory: unknown) => {
+                     output = renderSingleSelectFromFactory(factory);
+                     return null;
+                  },
+               },
+            },
+         );
+         return output;
+      };
+
+      expect(await render()).not.toContain("## Alpha");
+      expect(await render("auto")).toContain("## Alpha");
    });
 
    test("shows a custom response preview in the wide details pane", async () => {

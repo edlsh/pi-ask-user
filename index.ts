@@ -87,6 +87,7 @@ function safeMarkdownTheme(): MarkdownTheme | undefined {
 type AskOptionInput = QuestionOption | string;
 
 type AskDisplayMode = "overlay" | "inline";
+type AskSingleSelectLayout = "auto" | "list";
 
 interface AskParams {
    question: string;
@@ -96,6 +97,7 @@ interface AskParams {
    allowFreeform?: boolean;
    allowComment?: boolean;
    displayMode?: AskDisplayMode;
+   singleSelectLayout?: AskSingleSelectLayout;
    overlayToggleKey?: string | null;
    commentToggleKey?: string | null;
    timeout?: number;
@@ -733,6 +735,7 @@ class WrappedSingleSelectList implements Component {
    private allowFreeform: boolean;
    private allowComment: boolean;
    private theme: Theme;
+   private singleSelectLayout: AskSingleSelectLayout;
    private keybindings: KeybindingsManager;
    private commentToggle: ResolvedShortcut;
    private selectedIndex = 0;
@@ -751,6 +754,7 @@ class WrappedSingleSelectList implements Component {
       allowFreeform: boolean,
       allowComment: boolean,
       theme: Theme,
+      singleSelectLayout: AskSingleSelectLayout,
       keybindings: KeybindingsManager,
       commentToggle: ResolvedShortcut,
    ) {
@@ -758,6 +762,7 @@ class WrappedSingleSelectList implements Component {
       this.allowFreeform = allowFreeform;
       this.allowComment = allowComment;
       this.theme = theme;
+      this.singleSelectLayout = singleSelectLayout;
       this.keybindings = keybindings;
       this.commentToggle = commentToggle;
    }
@@ -855,6 +860,7 @@ class WrappedSingleSelectList implements Component {
    }
 
    private getSplitPaneWidths(width: number): { left: number; right: number } | null {
+      if (this.singleSelectLayout === "list") return null;
       if (width < SINGLE_SELECT_SPLIT_PANE_MIN_WIDTH) return null;
 
       const availableWidth = width - SINGLE_SELECT_SPLIT_PANE_SEPARATOR.length;
@@ -1083,6 +1089,7 @@ class AskComponent extends Container {
    private allowFreeform: boolean;
    private allowComment: boolean;
    private displayMode: AskDisplayMode;
+   private singleSelectLayout: AskSingleSelectLayout;
    private tui: TUI;
    private theme: Theme;
    private keybindings: KeybindingsManager;
@@ -1131,6 +1138,7 @@ class AskComponent extends Container {
       allowFreeform: boolean,
       allowComment: boolean,
       displayMode: AskDisplayMode,
+      singleSelectLayout: AskSingleSelectLayout,
       tui: TUI,
       theme: Theme,
       keybindings: KeybindingsManager,
@@ -1146,6 +1154,7 @@ class AskComponent extends Container {
       this.allowFreeform = allowFreeform;
       this.allowComment = allowComment;
       this.displayMode = displayMode;
+      this.singleSelectLayout = singleSelectLayout;
       this.tui = tui;
       this.theme = theme;
       this.keybindings = keybindings;
@@ -1676,6 +1685,7 @@ class AskComponent extends Container {
          this.allowFreeform,
          this.allowComment,
          this.theme,
+         this.singleSelectLayout,
          this.keybindings,
          this.shortcuts.commentToggle,
       );
@@ -2033,6 +2043,11 @@ export default function(pi: ExtensionAPI) {
                description: "UI rendering mode. 'overlay' shows a centered modal, 'inline' renders in-place. Default: PI_ASK_USER_DISPLAY_MODE env var if set, otherwise 'overlay'. Omit to respect the user's configured preference.",
             }),
          ),
+         singleSelectLayout: Type.Optional(
+            StringEnum(["auto", "list"] as const, {
+               description: "Single-select layout. 'auto' uses a details pane on wide terminals; 'list' always keeps descriptions below options. Default: PI_ASK_USER_SINGLE_SELECT_LAYOUT if set, otherwise 'auto'.",
+            }),
+         ),
          overlayToggleKey: Type.Optional(
             Type.String({
                description:
@@ -2066,6 +2081,7 @@ export default function(pi: ExtensionAPI) {
             allowFreeform = true,
             allowComment: requestedAllowComment,
             displayMode,
+            singleSelectLayout,
             overlayToggleKey,
             commentToggleKey,
             timeout,
@@ -2074,6 +2090,9 @@ export default function(pi: ExtensionAPI) {
          const envDisplayMode: AskDisplayMode | undefined =
             envMode === "overlay" || envMode === "inline" ? envMode : undefined;
          const effectiveDisplayMode: AskDisplayMode = displayMode ?? envDisplayMode ?? "overlay";
+         const envSingleSelectLayout = process.env.PI_ASK_USER_SINGLE_SELECT_LAYOUT?.trim().toLowerCase();
+         const effectiveSingleSelectLayout: AskSingleSelectLayout = singleSelectLayout
+            ?? (envSingleSelectLayout === "list" ? "list" : "auto");
          const allowComment = requestedAllowComment
             ?? parseBooleanPreference(process.env.PI_ASK_USER_ALLOW_COMMENT)
             ?? false;
@@ -2179,6 +2198,7 @@ export default function(pi: ExtensionAPI) {
                   allowFreeform,
                   allowComment,
                   effectiveDisplayMode,
+                  effectiveSingleSelectLayout,
                   tui,
                   theme,
                   keybindings,
