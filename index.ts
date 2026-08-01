@@ -463,6 +463,7 @@ class MultiSelectList implements Component {
    private selectedIndex = 0;
    private checked = new Set<number>();
    private commentEnabled = false;
+   private maxVisibleRows = 10;
    private cachedWidth?: number;
    private cachedLines?: string[];
 
@@ -488,6 +489,14 @@ class MultiSelectList implements Component {
 
    public isCommentEnabled(): boolean {
       return this.commentEnabled;
+   }
+
+   setMaxVisibleRows(rows: number): void {
+      const next = Math.max(1, Math.floor(rows));
+      if (next !== this.maxVisibleRows) {
+         this.maxVisibleRows = next;
+         this.invalidate();
+      }
    }
 
    invalidate(): void {
@@ -612,7 +621,6 @@ class MultiSelectList implements Component {
 
       const theme = this.theme;
       const count = this.getItemCount();
-      const maxVisible = Math.min(count, 10);
 
       if (count === 0) {
          this.cachedLines = [theme.fg("warning", "No options")];
@@ -620,21 +628,20 @@ class MultiSelectList implements Component {
          return this.cachedLines;
       }
 
-      const startIndex = Math.max(0, Math.min(this.selectedIndex - Math.floor(maxVisible / 2), count - maxVisible));
-      const endIndex = Math.min(startIndex + maxVisible, count);
+      const blocks: string[][] = [];
 
-      const lines: string[] = [];
-
-      for (let i = startIndex; i < endIndex; i++) {
+      for (let i = 0; i < count; i++) {
          const isSelected = i === this.selectedIndex;
          const prefix = isSelected ? theme.fg("accent", "→") : " ";
+         const block: string[] = [];
 
          if (this.isCommentToggleRow(i)) {
             const checkbox = this.commentEnabled ? theme.fg("success", "[✓]") : theme.fg("dim", "[ ]");
             const label = isSelected
                ? theme.fg("accent", theme.bold(COMMENT_TOGGLE_LABEL))
                : theme.fg("text", theme.bold(COMMENT_TOGGLE_LABEL));
-            lines.push(truncateToWidth(`${prefix}   ${checkbox} ${label}`, width, ""));
+            block.push(truncateToWidth(`${prefix}   ${checkbox} ${label}`, width, ""));
+            blocks.push(block);
             continue;
          }
 
@@ -642,12 +649,12 @@ class MultiSelectList implements Component {
             const label = theme.fg("text", theme.bold("Type something."));
             const desc = theme.fg("muted", "Enter a custom response");
             const line = `${prefix}   ${label} ${theme.fg("dim", "—")} ${desc}`;
-            lines.push(truncateToWidth(line, width, ""));
+            block.push(truncateToWidth(line, width, ""));
+            blocks.push(block);
             continue;
          }
 
-         const option = this.options[i];
-         if (!option) continue;
+         const option = this.options[i]!;
 
          const checkbox = this.checked.has(i) ? theme.fg("success", "[✓]") : theme.fg("dim", "[ ]");
          const num = theme.fg("dim", `${i + 1}.`);
@@ -656,20 +663,61 @@ class MultiSelectList implements Component {
             : theme.fg("text", theme.bold(option.title));
 
          const firstLine = `${prefix} ${num} ${checkbox} ${title}`;
-         lines.push(truncateToWidth(firstLine, width, ""));
+         block.push(truncateToWidth(firstLine, width, ""));
 
          if (option.description) {
             const indent = "      ";
             const wrapWidth = Math.max(10, width - indent.length);
             const wrapped = wrapTextWithAnsi(option.description, wrapWidth);
             for (const w of wrapped) {
-               lines.push(truncateToWidth(indent + theme.fg("muted", w), width, ""));
+               block.push(truncateToWidth(indent + theme.fg("muted", w), width, ""));
             }
          }
+
+         blocks.push(block);
       }
 
-      if (startIndex > 0 || endIndex < count) {
-         lines.push(theme.fg("dim", truncateToWidth(`  (${this.selectedIndex + 1}/${count})`, width, "")));
+      const maxRows = this.maxVisibleRows;
+      const totalRows = blocks.reduce((sum, block) => sum + block.length, 0);
+      let lines: string[];
+
+      if (totalRows <= maxRows) {
+         lines = blocks.flat();
+      } else {
+         const availableRows = maxRows > 1 ? maxRows - 1 : 1;
+         const selectedBlock = blocks[this.selectedIndex] ?? blocks[0] ?? [];
+
+         if (selectedBlock.length >= availableRows) {
+            lines = selectedBlock.slice(0, availableRows);
+         } else {
+            let startIndex = this.selectedIndex;
+            let endIndex = this.selectedIndex + 1;
+            let usedRows = selectedBlock.length;
+
+            while (true) {
+               const nextBlock = blocks[endIndex];
+               if (nextBlock && usedRows + nextBlock.length <= availableRows) {
+                  usedRows += nextBlock.length;
+                  endIndex += 1;
+                  continue;
+               }
+
+               const previousBlock = blocks[startIndex - 1];
+               if (previousBlock && usedRows + previousBlock.length <= availableRows) {
+                  startIndex -= 1;
+                  usedRows += previousBlock.length;
+                  continue;
+               }
+
+               break;
+            }
+
+            lines = blocks.slice(startIndex, endIndex).flat();
+         }
+
+         if (maxRows > 1) {
+            lines.push(theme.fg("dim", truncateToWidth(`  (${this.selectedIndex + 1}/${count})`, width, "")));
+         }
       }
 
       this.cachedWidth = width;
@@ -1267,7 +1315,9 @@ class AskComponent extends Container {
       if (safeBudget <= 0) return [];
 
       if (this.mode === "select") {
-         if (!this.allowMultiple) {
+         if (this.allowMultiple) {
+            this.ensureMultiSelectList().setMaxVisibleRows(Math.max(1, safeBudget));
+         } else {
             this.ensureSingleSelectList().setMaxVisibleRows(Math.max(1, safeBudget));
          }
          return this.limitLines(this.modeContainer.render(width), safeBudget, width, true);

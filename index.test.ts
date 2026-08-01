@@ -1609,6 +1609,55 @@ describe("ask_user", () => {
       expect(joined).toContain("↓");
    });
 
+   test("scrolls constrained multi-select overlays to the comment and freeform rows", async () => {
+      const tool = await setupTool();
+      let initialRendered: string[] = [];
+      let commentRendered: string[] = [];
+      let freeformRendered: string[] = [];
+
+      const result = await tool.execute(
+         "tool-call-id",
+         {
+            question: "Which option should we use?",
+            options: ["Option 1", "Option 2", "Option 3", "Option 4"],
+            allowMultiple: true,
+            allowFreeform: true,
+            allowComment: true,
+         },
+         undefined,
+         undefined,
+         {
+            hasUI: true,
+            ui: {
+               custom: async (factory: any) => {
+                  const component = factory(
+                     { requestRender() { }, terminal: { rows: 12 } },
+                     createTheme(),
+                     createKeybindings(),
+                     () => { },
+                  );
+
+                  initialRendered = component.render(50);
+                  for (let index = 0; index < 4; index += 1) component.handleInput("down");
+                  commentRendered = component.render(50);
+                  component.handleInput("down");
+                  freeformRendered = component.render(50);
+                  return null;
+               },
+            },
+         },
+      );
+
+      expect(result.isError).not.toBe(true);
+      expect(initialRendered.join("\n")).toContain("(1/6)");
+      expect(commentRendered.join("\n")).toContain("Add extra context after selection");
+      expect(commentRendered.join("\n")).toContain("(5/6)");
+      expect(commentRendered.join("\n")).not.toContain("…");
+      expect(freeformRendered.join("\n")).toContain("Type something.");
+      expect(freeformRendered.join("\n")).toContain("(6/6)");
+      expect(freeformRendered.join("\n")).not.toContain("…");
+   });
+
    test("scrolls the prompt pane without hiding answers or help", async () => {
       const tool = await setupTool();
       let initialRendered: string[] = [];
