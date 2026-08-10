@@ -47,9 +47,10 @@ Prepare a short neutral summary (3-7 bullets or short paragraph) covering:
 - trade-offs
 - recommendation (if any)
 
-### 4) Ask one focused question
-Call `ask_user` with one decision at a time:
-- `question`: concrete decision prompt
+### 4) Ask one focused question or an independent batch
+Call `ask_user` with one decision at a time, or use `questions` when several independent decisions have settled prerequisites:
+- `question`: one concrete decision prompt
+- `questions`: independent prompts that can be answered in any order; ask dependent follow-ups in a later call
 - `context`: synthesized summary
 - `options`: 2-5 clear choices when possible
 - `allowMultiple`: `false` unless independent selections are genuinely needed
@@ -95,7 +96,8 @@ Use:
 
 Avoid:
 - broad/open prompts with no decision boundary
-- multiple unrelated decisions in one question
+- multiple unrelated decisions inside one `question` string
+- batching questions when one answer changes what should be asked next
 - questions that should be answered by reading code/docs first
 
 ### Option quality
@@ -123,7 +125,27 @@ Good options include a short description when trade-offs are non-obvious.
 }
 ```
 
-### Multi-select when decisions are independent
+### Batch when several questions are independent
+
+```json
+{
+  "context": "The API and worker choices are independent and both are needed before implementation.",
+  "questions": [
+    {
+      "id": "api",
+      "question": "Which API style should we use?",
+      "options": [{ "title": "REST" }, { "title": "GraphQL" }]
+    },
+    {
+      "id": "worker",
+      "question": "Which worker runtime should we use?",
+      "options": [{ "title": "Node.js" }, { "title": "Bun" }]
+    }
+  ]
+}
+```
+
+### Multi-select when selections are independent
 
 ```json
 {

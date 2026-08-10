@@ -105,7 +105,7 @@ type AskComponentFactory = (
    theme: unknown,
    keybindings: unknown,
    done: (value: unknown) => void,
-) => { handleInput(data: string): void };
+) => { handleInput(data: string): void; render(width: number): string[] };
 
 beforeAll(() => {
    // Model the failure mode from https://github.com/edlsh/pi-ask-user/issues/17.
@@ -342,6 +342,205 @@ describe("ask_user", () => {
          { name: "herdr:blocked", payload: { active: true, label: "Waiting for user response" } },
          { name: "herdr:blocked", payload: { active: false } },
       ]);
+   });
+
+   describe("batch questions", () => {
+      test("requires exactly one input mode and validates batch IDs", async () => {
+         const tool = await setupTool();
+         const ctx = { hasUI: false };
+
+         const neither = await tool.execute("call", {}, undefined, undefined, ctx);
+         const both = await tool.execute(
+            "call",
+            { question: "One?", questions: [{ question: "Two?" }] },
+            undefined,
+            undefined,
+            ctx,
+         );
+         const blankAndBatch = await tool.execute(
+            "call",
+            { question: "", questions: [{ question: "Two?" }] },
+            undefined,
+            undefined,
+            ctx,
+         );
+         const duplicate = await tool.execute(
+            "call",
+            { questions: [{ id: "same", question: "One?" }, { id: "same", question: "Two?" }] },
+            undefined,
+            undefined,
+            ctx,
+         );
+
+         expect(neither.isError).toBe(true);
+         expect(both.isError).toBe(true);
+         expect(blankAndBatch.isError).toBe(true);
+         expect(duplicate.isError).toBe(true);
+         expect(duplicate.details.error).toContain("Duplicate batch question id");
+      });
+
+      test("navigates with Tab and Shift+Tab, preserves answers, and submits once", async () => {
+         const tool = await setupTool();
+         const seenPages: string[] = [];
+
+         const result = await tool.execute(
+            "tool-call-id",
+            {
+               questions: [
+                  { id: "first", question: "First question?", options: ["A"] },
+                  { id: "second", question: "Second question?", options: ["B1", "B2"] },
+               ],
+            },
+            undefined,
+            undefined,
+            {
+               hasUI: true,
+               ui: {
+                  custom: async (factory: AskComponentFactory) => new Promise((resolve) => {
+                     const component = factory(
+                        { requestRender() { }, terminal: { rows: 30 } },
+                        createTheme(),
+                        createKeybindings(),
+                        resolve,
+                     );
+                     const render = () => component.render(100).join("\n");
+
+                     seenPages.push(render());
+                     component.handleInput("shift+tab");
+                     seenPages.push(render());
+                     component.handleInput("enter");
+                     component.handleInput("tab");
+                     component.handleInput("tab");
+                     seenPages.push(render());
+                     component.handleInput("shift+tab");
+                     seenPages.push(render());
+
+                     component.handleInput("enter");
+                     component.handleInput("enter");
+                     seenPages.push(render());
+
+                     component.handleInput("shift+tab");
+                     component.handleInput("down");
+                     component.handleInput("enter");
+                     seenPages.push(render());
+                     component.handleInput("enter");
+                  }),
+               },
+            },
+         );
+
+         expect(seenPages[0]).toContain("ask_user · 1/2");
+         expect(seenPages[0]).toContain("First question?");
+         expect(seenPages[0]).toContain("Tab next");
+         expect(seenPages[0]).toContain("Shift+Tab previous");
+         expect(seenPages[1]).toContain("ask_user · submit");
+         expect(seenPages[1]).toContain("Submit batch");
+         expect(seenPages[1]).toContain("Answer every question before submitting");
+         expect(seenPages[2]).toContain("Second question?");
+         expect(seenPages[3]).toContain("First question?");
+         expect(seenPages[4]).toContain("Submit batch");
+         expect(seenPages[4]).toContain("2/2 answered");
+         expect(result.details.cancelled).toBe(false);
+         expect(result.details.response).toEqual({
+            kind: "batch",
+            answers: [
+               { id: "first", question: "First question?", response: { kind: "selection", selections: ["A"] } },
+               { id: "second", question: "Second question?", response: { kind: "selection", selections: ["B2"] } },
+            ],
+         });
+      });
+
+      test("aggregates the RPC fallback only after every question is answered", async () => {
+         const tool = await setupTool();
+         const answers = ["A", "B"];
+
+         const result = await tool.execute(
+            "tool-call-id",
+            {
+               questions: [
+                  { question: "First?", options: ["A"] },
+                  { question: "Second?", options: ["B"] },
+               ],
+            },
+            undefined,
+            undefined,
+            {
+               hasUI: true,
+               ui: {
+                  custom: async () => undefined,
+                  select: async () => answers.shift(),
+                  input: async () => undefined,
+               },
+            },
+         );
+
+         expect(result.details.cancelled).toBe(false);
+         expect(result.details.response.kind).toBe("batch");
+         expect(result.details.response.answers).toHaveLength(2);
+      });
+
+      test("stops RPC fallback after cancellation between questions", async () => {
+         const tool = await setupTool();
+         const controller = new AbortController();
+         let selectCalls = 0;
+
+         const result = await tool.execute(
+            "tool-call-id",
+            { questions: [{ question: "First?", options: ["A"] }, { question: "Second?", options: ["B"] }] },
+            controller.signal,
+            undefined,
+            {
+               hasUI: true,
+               ui: {
+                  custom: async () => undefined,
+                  select: async () => {
+                     selectCalls += 1;
+                     controller.abort();
+                     return "A";
+                  },
+                  input: async () => undefined,
+               },
+            },
+         );
+
+         expect(selectCalls).toBe(1);
+         expect(result.details.cancelled).toBe(true);
+         expect(result.details.response).toBeNull();
+      });
+
+      test("shares one timeout budget across RPC fallback questions", async () => {
+         const tool = await setupTool();
+         const originalNow = Date.now;
+         let now = 1000;
+         Date.now = () => now;
+         onTestFinished(() => {
+            Date.now = originalNow;
+         });
+         const timeouts: number[] = [];
+         const answers = ["A", "B"];
+
+         const result = await tool.execute(
+            "tool-call-id",
+            { questions: [{ question: "First?", options: ["A"] }, { question: "Second?", options: ["B"] }], timeout: 100 },
+            undefined,
+            undefined,
+            {
+               hasUI: true,
+               ui: {
+                  custom: async () => undefined,
+                  select: async (_title: string, _options: string[], options: { timeout: number }) => {
+                     timeouts.push(options.timeout);
+                     now += 40;
+                     return answers.shift();
+                  },
+                  input: async () => undefined,
+               },
+            },
+         );
+
+         expect(timeouts).toEqual([100, 60]);
+         expect(result.details.cancelled).toBe(false);
+      });
    });
 
    test("uses overlay mode by default", async () => {
