@@ -13,6 +13,7 @@ High-quality video: [ask-user-demo.mp4](./media/ask-user-demo.mp4)
 - Searchable single-select option lists with wrapped titles and descriptions
 - Responsive split-pane details preview on wide terminals, with a persistent single-column preference
 - Multi-select option lists
+- Batches of independent questions with reviewable answers and an explicit Submit page
 - Optional freeform responses
 - User-toggleable extra context on structured selections
 - Context display support
@@ -39,7 +40,7 @@ This package now ships a skill at `skills/ask-user/SKILL.md` that nudges/mandate
 The skill follows a "decision handshake" flow:
 
 1. Gather evidence and summarize context
-2. Ask one focused question via `ask_user`
+2. Ask one focused question, or a batch of independent questions, via `ask_user`
 3. Wait for explicit user choice
 4. Confirm the decision, then proceed
 
@@ -61,8 +62,9 @@ The registered tool name is:
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `question` | `string` | *required* | The question to ask the user |
-| `context` | `string?` | — | Relevant context summary shown before the question |
+| `question` | `string?` | — | One focused question. Use exactly one of `question` or `questions` |
+| `questions` | `{id?, question, context?, options?, allowMultiple?, allowFreeform?, allowComment?}[]?` | — | Independent questions answered in one batch. IDs default to `q1`, `q2`, ... |
+| `context` | `string?` | — | Relevant context summary shown before the question, or as the fallback context for each batch question |
 | `options` | `{title, description?}[]?` | `[]` | Multiple-choice options. The schema is a flat object shape (no `anyOf`, which some provider proxies strip or reject); plain strings and common alias keys (`label`, `text`, `value`, `name`, `option`) are still accepted at runtime |
 | `allowMultiple` | `boolean?` | `false` | Enable multi-select mode |
 | `allowFreeform` | `boolean?` | `true` | Add a "Type something" freeform option |
@@ -91,6 +93,30 @@ The registered tool name is:
 ```
 
 `displayMode: "inline"` uses the same interaction logic but skips overlay mode when calling `ctx.ui.custom(...)`. RPC/headless fallback behavior is unchanged.
+
+### Batch questions
+
+Use `questions` when several independent questions have settled prerequisites. Each question keeps its own picker/editor state while the user moves through the batch with `Tab` and `Shift+Tab`. Confirmed answers remain editable, and no result is returned until every question has an answer and the user presses Enter on the final Submit page.
+
+```json
+{
+  "context": "Choose defaults for the new project.",
+  "questions": [
+    {
+      "id": "runtime",
+      "question": "Which runtime should we use?",
+      "options": [{ "title": "Node.js" }, { "title": "Bun" }]
+    },
+    {
+      "id": "tests",
+      "question": "Which test runner should we use?",
+      "options": [{ "title": "Node test runner" }, { "title": "Vitest" }]
+    }
+  ]
+}
+```
+
+Questions that depend on an earlier answer belong in a later `ask_user` call. In RPC fallback mode, batch questions use the existing dialogs sequentially because the rich navigation UI is unavailable.
 
 ## Personal preferences via environment variables
 
@@ -153,7 +179,8 @@ While an `ask_user` prompt is open:
 | `alt+o` (configurable via `overlayToggleKey`) | Hide/show the overlay popup so you can read the agent's prior output. Available in `overlay` mode only. The first time you hide it, a notification reminds you which key brings it back. |
 | `ctrl+g` (configurable via `commentToggleKey`) | Toggle the optional comment/extra-context row (when `allowComment: true`). |
 | `ctrl+e` | Expand or collapse oversized context while choosing an option. If another configured ask shortcut owns it, the prompt shows `ctrl+x` or `ctrl+y` instead. |
-| `enter` | Confirm the focused option, submit a freeform response, or submit/skip an optional comment. |
+| `enter` | Confirm the focused option, submit a freeform response, submit/skip an optional comment, or submit a completed batch from its Submit page. |
+| `tab` / `shift+tab` | In batch mode, move forward/backward through question pages and the final Submit page. |
 | `esc` | Clear the search filter, exit freeform/comment mode, or cancel the prompt. |
 | `↑` / `↓`, `ctrl+k` / `ctrl+j` | Navigate options. `ctrl+k` / `ctrl+j` (vim-style) work while typing in searchable prompts without disturbing the filter. |
 
@@ -180,11 +207,26 @@ type AskResponse =
   | { kind: "selection"; selections: string[]; comment?: string }
   | { kind: "freeform"; text: string };
 
+type BatchResponse = {
+  kind: "batch";
+  answers: Array<{
+    id: string;
+    question: string;
+    response: AskResponse;
+  }>;
+};
+
 interface AskToolDetails {
   question: string;
   context?: string;
   options: QuestionOption[];
   response: AskResponse | null;
+  cancelled: boolean;
+}
+
+interface BatchAskToolDetails {
+  questions: Array<{ id: string; question: string }>;
+  response: BatchResponse | null;
   cancelled: boolean;
 }
 ```

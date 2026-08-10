@@ -4,6 +4,7 @@
 
 ### Added
 
+- Batch input for independent questions, with `Tab`/`Shift+Tab` review navigation, preserved answers, an explicit Submit page, and one structured batch result. Provides the concrete form/API requested in #31.
 - Responsive context collapse for overlay and inline prompts; oversized context preserves the full value while keeping the question and choices visible, and `ctrl+e` toggles the expanded view.
 - Configurable `auto` or always-single-column layouts for wide single-select prompts. Closes #30.
 - `herdr:blocked` lifecycle events while waiting for structured or freeform user input.

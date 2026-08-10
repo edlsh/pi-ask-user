@@ -33,8 +33,9 @@ Use this protocol whenever the trigger matrix says to ask.
    - read code/docs/logs first; do not ask blindly
 3. **Summarize context**
    - prepare concise trade-off context (3–7 bullets or short paragraph)
-4. **Ask one focused question**
-   - call `ask_user` for one decision at a time
+4. **Ask one focused question or an independent batch**
+   - use `question` for one decision
+   - use `questions` only when each decision can be answered without an earlier answer; dependent follow-ups belong in a later call
 5. **Commit and proceed**
    - restate chosen option and implement accordingly
 

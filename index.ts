@@ -89,8 +89,19 @@ type AskOptionInput = QuestionOption | string;
 type AskDisplayMode = "overlay" | "inline";
 type AskSingleSelectLayout = "auto" | "list";
 
-interface AskParams {
+interface BatchQuestionInput {
+   id?: string;
    question: string;
+   context?: string;
+   options?: AskOptionInput[];
+   allowMultiple?: boolean;
+   allowFreeform?: boolean;
+   allowComment?: boolean;
+}
+
+interface AskParams {
+   question?: string;
+   questions?: BatchQuestionInput[];
    context?: string;
    options?: AskOptionInput[];
    allowMultiple?: boolean;
@@ -119,6 +130,36 @@ interface AskToolDetails {
    context?: string;
    options: QuestionOption[];
    response: AskResponse | null;
+   cancelled: boolean;
+}
+
+interface NormalizedBatchQuestion extends Omit<BatchQuestionInput, "id" | "question"> {
+   id: string;
+   question: string;
+}
+
+interface BatchQuestionPage extends NormalizedBatchQuestion {
+   context?: string;
+   options: QuestionOption[];
+   allowMultiple: boolean;
+   allowFreeform: boolean;
+   allowComment: boolean;
+}
+
+interface BatchAnswer {
+   id: string;
+   question: string;
+   response: AskResponse;
+}
+
+interface BatchResponse {
+   kind: "batch";
+   answers: BatchAnswer[];
+}
+
+interface BatchAskToolDetails {
+   questions: NormalizedBatchQuestion[];
+   response: BatchResponse | null;
    cancelled: boolean;
 }
 
@@ -200,6 +241,49 @@ function formatResponseSummary(response: AskResponse): string {
 
    const selections = response.selections.join(", ");
    return response.comment ? `${selections} — ${response.comment}` : selections;
+}
+
+function normalizeBatchQuestions(questions: BatchQuestionInput[]): NormalizedBatchQuestion[] {
+   if (questions.length === 0) throw new Error("Batch questions must not be empty");
+
+   const ids = new Set<string>();
+   return questions.map((input, index) => {
+      const question = input.question.trim();
+      if (!question) throw new Error(`Batch question ${index + 1} is empty`);
+
+      const id = input.id?.trim() || `q${index + 1}`;
+      if (ids.has(id)) throw new Error(`Duplicate batch question id: ${id}`);
+      ids.add(id);
+
+      return { ...input, id, question };
+   });
+}
+
+function aggregateBatchResponses(
+   questions: NormalizedBatchQuestion[],
+   responses: (AskResponse | null)[],
+): BatchResponse | null {
+   if (responses.length !== questions.length) {
+      throw new Error(`Expected ${questions.length} batch responses, received ${responses.length}`);
+   }
+
+   const answers: BatchAnswer[] = [];
+   for (let index = 0; index < questions.length; index++) {
+      const response = responses[index];
+      if (!response) return null;
+      answers.push({
+         id: questions[index].id,
+         question: questions[index].question,
+         response,
+      });
+   }
+   return { kind: "batch", answers };
+}
+
+function formatBatchResponseSummary(response: BatchResponse): string {
+   return response.answers
+      .map((answer, index) => `${index + 1}. ${answer.id}: ${formatResponseSummary(answer.response)}`)
+      .join("\n");
 }
 
 function buildCommentPrompt(prompt: string, selections: string[]): string {
@@ -1083,6 +1167,8 @@ class WrappedSingleSelectList implements Component {
  */
 class AskComponent extends Container {
    private question: string;
+   private progressLabel?: string;
+   private batchNavigation: boolean;
    private context?: string;
    private options: QuestionOption[];
    private allowMultiple: boolean;
@@ -1144,10 +1230,14 @@ class AskComponent extends Container {
       keybindings: KeybindingsManager,
       shortcuts: ResolvedAskShortcuts,
       onDone: (result: AskUIResult | null) => void,
+      progressLabel?: string,
+      batchNavigation = false,
    ) {
       super();
 
       this.question = question;
+      this.progressLabel = progressLabel;
+      this.batchNavigation = batchNavigation;
       this.context = context;
       this.options = options;
       this.allowMultiple = allowMultiple;
@@ -1551,7 +1641,7 @@ class AskComponent extends Container {
    private renderTopBorder(width: number): string {
       return new BoxBorderTop(
          (s: string) => this.theme.fg("accent", s),
-         "ask_user",
+         this.progressLabel ? `ask_user · ${this.progressLabel}` : "ask_user",
          (s: string) => this.theme.fg("dim", this.theme.bold(s)),
       ).render(width)[0] ?? "";
    }
@@ -1588,7 +1678,9 @@ class AskComponent extends Container {
 
    private updateStaticText(): void {
       const theme = this.theme;
-      const title = this.mode === "comment" ? "Optional comment" : "Question";
+      const title = this.mode === "comment"
+         ? "Optional comment"
+         : this.progressLabel ? `Question ${this.progressLabel}` : "Question";
       this.titleText.setText(theme.fg("accent", theme.bold(title)));
       this.questionText.setText(theme.fg("text", theme.bold(this.question)));
       if (this.contextComponent && this.context) {
@@ -1622,11 +1714,15 @@ class AskComponent extends Container {
             this.contextExpanded ? "collapse context" : "expand context",
          )
          : null;
+      const batchNavigationHints = this.batchNavigation
+         ? [literalHint(theme, "Tab", "next"), literalHint(theme, "Shift+Tab", "previous")]
+         : [];
       if (this.mode === "freeform" || this.mode === "comment") {
          const alternateCancelKeys = this.keybindings
             .getKeys("tui.select.cancel")
             .filter((key) => key !== "escape" && key !== "esc");
          const hints = [
+            ...batchNavigationHints,
             keybindingHint(theme, this.keybindings, "tui.input.submit", this.mode === "comment" ? "submit/skip" : "submit"),
             keybindingHint(theme, this.keybindings, "tui.input.newLine", "newline"),
             literalHint(theme, "esc", "back"),
@@ -1641,6 +1737,7 @@ class AskComponent extends Container {
 
       if (this.allowMultiple) {
          const hints = [
+            ...batchNavigationHints,
             literalHint(theme, "↑↓", "navigate"),
             literalHint(theme, "space", "toggle"),
             commentHint,
@@ -1658,6 +1755,7 @@ class AskComponent extends Container {
             .getKeys("tui.select.cancel")
             .filter((key) => key !== "escape" && key !== "esc");
          const hints = [
+            ...batchNavigationHints,
             literalHint(theme, "type", "filter"),
             commentHint,
             contextHint,
@@ -1923,6 +2021,167 @@ class AskComponent extends Container {
    }
 }
 
+class BatchAskComponent extends Container {
+   private readonly pages: AskComponent[];
+   private readonly questions: BatchQuestionPage[];
+   private readonly responses: (AskResponse | null)[];
+   private readonly displayMode: AskDisplayMode;
+   private readonly tui: TUI;
+   private readonly theme: Theme;
+   private readonly keybindings: KeybindingsManager;
+   private readonly onDone: (responses: AskResponse[] | null) => void;
+   private readonly onProgress: (answeredCount: number) => void;
+   private currentPage = 0;
+   private _focused = false;
+
+   constructor(
+      questions: BatchQuestionPage[],
+      displayMode: AskDisplayMode,
+      singleSelectLayout: AskSingleSelectLayout,
+      tui: TUI,
+      theme: Theme,
+      keybindings: KeybindingsManager,
+      shortcuts: ResolvedAskShortcuts,
+      onDone: (responses: AskResponse[] | null) => void,
+      onProgress: (answeredCount: number) => void,
+   ) {
+      super();
+      this.questions = questions;
+      this.displayMode = displayMode;
+      this.tui = tui;
+      this.theme = theme;
+      this.keybindings = keybindings;
+      this.onDone = onDone;
+      this.onProgress = onProgress;
+      this.responses = questions.map(() => null);
+      this.pages = questions.map((question, index) => new AskComponent(
+         question.question,
+         question.context,
+         question.options,
+         question.allowMultiple,
+         question.allowFreeform,
+         question.allowComment,
+         displayMode,
+         singleSelectLayout,
+         tui,
+         theme,
+         keybindings,
+         shortcuts,
+         (response) => this.handleQuestionDone(index, response),
+         `${index + 1}/${questions.length}`,
+         true,
+      ));
+   }
+
+   get focused(): boolean {
+      return this._focused;
+   }
+
+   set focused(value: boolean) {
+      this._focused = value;
+      this.syncFocus();
+   }
+
+   override invalidate(): void {
+      for (const page of this.pages) page.invalidate();
+   }
+
+   override render(width: number): string[] {
+      if (this.isSubmitPage()) return this.renderSubmitPage(width);
+      return this.pages[this.currentPage]?.render(width) ?? [];
+   }
+
+   handleInput(data: string): void {
+      if (matchesKey(data, Key.shift("tab")) || data === "\x1b[Z") {
+         this.currentPage = (this.currentPage - 1 + this.pages.length + 1) % (this.pages.length + 1);
+         this.afterNavigation();
+         return;
+      }
+      if (matchesKey(data, Key.tab) || data === "\t") {
+         this.currentPage = (this.currentPage + 1) % (this.pages.length + 1);
+         this.afterNavigation();
+         return;
+      }
+
+      if (this.isSubmitPage()) {
+         if (this.keybindings.matches(data, "tui.select.confirm") && this.canSubmit()) {
+            this.onDone(this.responses as AskResponse[]);
+            return;
+         }
+         if (this.keybindings.matches(data, "tui.select.cancel")) {
+            this.onDone(null);
+         }
+         return;
+      }
+
+      this.pages[this.currentPage]?.handleInput(data);
+   }
+
+   private handleQuestionDone(index: number, response: AskResponse | null): void {
+      if (!response) {
+         this.onDone(null);
+         return;
+      }
+      this.responses[index] = response;
+      this.currentPage = index + 1;
+      this.onProgress(this.responses.filter((answer) => answer !== null).length);
+      this.afterNavigation();
+   }
+
+   private isSubmitPage(): boolean {
+      return this.currentPage === this.pages.length;
+   }
+
+   private canSubmit(): boolean {
+      return this.responses.every((response) => response !== null);
+   }
+
+   private afterNavigation(): void {
+      this.syncFocus();
+      this.tui.requestRender();
+   }
+
+   private syncFocus(): void {
+      for (let index = 0; index < this.pages.length; index++) {
+         this.pages[index].focused = this._focused && !this.isSubmitPage() && this.currentPage === index;
+      }
+   }
+
+   private renderSubmitPage(width: number): string[] {
+      const innerWidth = Math.max(1, width - BOX_BORDER_OVERHEAD);
+      const answeredCount = this.responses.filter((response) => response !== null).length;
+      const bodyLines = [
+         this.theme.fg("accent", this.theme.bold("Submit batch")),
+         this.theme.fg(this.canSubmit() ? "success" : "warning", `${answeredCount}/${this.questions.length} answered`),
+         "",
+         ...this.questions.flatMap((question, index) => {
+            const response = this.responses[index];
+            return response
+               ? [`${this.theme.fg("success", "●")} ${index + 1}. ${question.question}`, `  ${formatResponseSummary(response)}`]
+               : [this.theme.fg("warning", `○ ${index + 1}. Unanswered — ${question.question}`)];
+         }),
+         "",
+         this.canSubmit()
+            ? this.theme.fg("success", "Press Enter to submit all answers")
+            : this.theme.fg("warning", "Answer every question before submitting"),
+         this.theme.fg("dim", "Tab next • Shift+Tab previous • Esc cancel"),
+      ];
+      const maxLines = this.displayMode === "overlay"
+         ? getOverlayMaxRenderLinesForRows(this.tui.terminal.rows)
+         : bodyLines.length + 2;
+      const bodyCapacity = Math.max(1, maxLines - 2);
+      const visibleBody = bodyLines.length <= bodyCapacity
+         ? bodyLines
+         : [...bodyLines.slice(0, Math.max(0, bodyCapacity - 2)), this.theme.fg("dim", "…"), bodyLines.at(-1) ?? ""];
+      const borderColor = (text: string) => this.theme.fg("accent", text);
+      return [
+         new BoxBorderTop(borderColor, "ask_user · submit", (text) => this.theme.fg("dim", this.theme.bold(text))).render(width)[0] ?? "",
+         ...visibleBody.map((line) => `${borderColor(BOX_BORDER_LEFT)}${truncateToWidth(line, innerWidth, "", true)}${borderColor(BOX_BORDER_RIGHT)}`),
+         new BoxBorderBottom(borderColor, `v${ASK_USER_VERSION}`, (text) => this.theme.fg("dim", text)).render(width)[0] ?? "",
+      ];
+   }
+}
+
 /**
  * RPC/headless fallback: use dialog methods (select/input) instead of the rich TUI overlay.
  * ctx.ui.custom() returns undefined in RPC mode, so we degrade gracefully.
@@ -1993,21 +2252,44 @@ export default function(pi: ExtensionAPI) {
       name: "ask_user",
       label: "Ask User",
       description:
-         "Ask the user a question with optional multiple-choice answers. Use this to gather information interactively. Ask exactly one focused question per call. Before calling, gather context with tools (read/web/ref) and pass a short summary via the context field.",
+         "Ask the user one focused question or a batch of independent questions. Use exactly one of question or questions. Before calling, gather context with tools (read/web/ref) and pass a short summary via the context field.",
       promptSnippet:
-         "Ask the user one focused question with optional multiple-choice answers to gather information interactively",
+         "Ask the user one focused question or a batch of independent questions to gather information interactively",
       promptGuidelines: [
          "Before calling ask_user, gather context with tools (read/web/ref) and pass a short summary via the context field.",
          "Use ask_user when the user's intent is ambiguous, when a decision requires explicit user input, or when multiple valid options exist.",
-         "Ask exactly one focused question per ask_user call.",
-         "Do not combine multiple numbered, multipart, or unrelated questions into one ask_user prompt.",
+         "Use question for one focused question. Use questions only for independent questions whose prerequisites are already settled.",
+         "Ask dependent questions in a later ask_user call after the prerequisite answers are known.",
+         "Use exactly one of question or questions.",
       ],
       // Block other tool calls in the same assistant turn until the user answers,
       // so the model can't batch ask_user with bash/edit/write and let those run
       // (potentially with side effects) before the user sees the prompt.
       executionMode: "sequential",
       parameters: Type.Object({
-         question: Type.String({ description: "The question to ask the user" }),
+         question: Type.Optional(Type.String({ description: "One focused question to ask the user" })),
+         questions: Type.Optional(
+            Type.Array(
+               Type.Object({
+                  id: Type.Optional(Type.String({ description: "Stable answer ID. Defaults to q1, q2, ..." })),
+                  question: Type.String({ description: "One independent question in this batch" }),
+                  context: Type.Optional(Type.String({ description: "Context for this question" })),
+                  options: Type.Optional(
+                     Type.Array(
+                        Type.Object({
+                           title: Type.String({ description: "Short title for this option" }),
+                           description: Type.Optional(Type.String({ description: "Longer description explaining this option" })),
+                        }),
+                        { description: "Options for this question" },
+                     ),
+                  ),
+                  allowMultiple: Type.Optional(Type.Boolean({ description: "Allow multiple selections for this question" })),
+                  allowFreeform: Type.Optional(Type.Boolean({ description: "Allow a freeform answer for this question" })),
+                  allowComment: Type.Optional(Type.Boolean({ description: "Allow an optional comment for this question" })),
+               }),
+               { description: "Independent questions to answer in one local UI batch before one combined result is returned" },
+            ),
+         ),
          context: Type.Optional(
             Type.String({
                description: "Relevant context to show before the question (summary of findings)",
@@ -2066,15 +2348,9 @@ export default function(pi: ExtensionAPI) {
       }),
 
       async execute(_toolCallId, params, signal, onUpdate, ctx) {
-         if (signal?.aborted) {
-            return {
-               content: [{ type: "text", text: "Cancelled" }],
-               details: { question: params.question, options: [], response: null, cancelled: true } as AskToolDetails,
-            };
-         }
-
          const {
-            question,
+            question: rawQuestion,
+            questions: rawQuestions,
             context,
             options: rawOptions = [],
             allowMultiple = false,
@@ -2086,6 +2362,38 @@ export default function(pi: ExtensionAPI) {
             commentToggleKey,
             timeout,
          } = params as AskParams;
+         const question = rawQuestion?.trim();
+         const hasSingleQuestion = rawQuestion !== undefined;
+         const hasBatchQuestions = rawQuestions !== undefined;
+
+         if (hasSingleQuestion === hasBatchQuestions) {
+            return {
+               content: [{ type: "text", text: "Invalid request: provide exactly one of question or questions." }],
+               isError: true,
+               details: { error: "Provide exactly one of question or questions" },
+            };
+         }
+
+         if (hasSingleQuestion && !question) {
+            return {
+               content: [{ type: "text", text: "Invalid request: question must not be empty." }],
+               isError: true,
+               details: { error: "Question must not be empty" },
+            };
+         }
+
+         if (signal?.aborted) {
+            return hasBatchQuestions
+               ? {
+                  content: [{ type: "text", text: "Cancelled" }],
+                  details: { questions: [], response: null, cancelled: true } as BatchAskToolDetails,
+               }
+               : {
+                  content: [{ type: "text", text: "Cancelled" }],
+                  details: { question: question ?? "", options: [], response: null, cancelled: true } as AskToolDetails,
+               };
+         }
+
          const envMode = process.env.PI_ASK_USER_DISPLAY_MODE?.trim().toLowerCase();
          const envDisplayMode: AskDisplayMode | undefined =
             envMode === "overlay" || envMode === "inline" ? envMode : undefined;
@@ -2108,8 +2416,182 @@ export default function(pi: ExtensionAPI) {
                DEFAULT_COMMENT_TOGGLE_KEY,
             ),
          };
-         const options = rawOptions.map(coerceOption).filter((option): option is QuestionOption => option !== null);
          const normalizedContext = context?.trim() || undefined;
+
+         if (hasBatchQuestions) {
+            let batchQuestions: NormalizedBatchQuestion[];
+            try {
+               batchQuestions = normalizeBatchQuestions(rawQuestions ?? []);
+            } catch (error) {
+               const message = error instanceof Error ? error.message : String(error);
+               return {
+                  content: [{ type: "text", text: `Invalid batch: ${message}` }],
+                  isError: true,
+                  details: { error: message },
+               };
+            }
+
+            const batchPages: BatchQuestionPage[] = [];
+            for (const batchQuestion of batchQuestions) {
+               const currentOptions = (batchQuestion.options ?? [])
+                  .map(coerceOption)
+                  .filter((option): option is QuestionOption => option !== null);
+               if ((batchQuestion.options?.length ?? 0) > 0 && currentOptions.length === 0) {
+                  return {
+                     content: [{ type: "text", text: `Invalid batch options for ${batchQuestion.id}.` }],
+                     isError: true,
+                     details: { error: `Malformed options for batch question ${batchQuestion.id}` },
+                  };
+               }
+               batchPages.push({
+                  ...batchQuestion,
+                  context: batchQuestion.context?.trim() || normalizedContext,
+                  options: currentOptions,
+                  allowMultiple: batchQuestion.allowMultiple ?? false,
+                  allowFreeform: currentOptions.length === 0 ? true : batchQuestion.allowFreeform ?? true,
+                  allowComment: batchQuestion.allowComment ?? allowComment,
+               });
+            }
+
+            if (!ctx.hasUI || !ctx.ui) {
+               const questionsText = batchPages
+                  .map((page, index) => `${index + 1}. ${page.question}`)
+                  .join("\n");
+               return {
+                  content: [{ type: "text", text: `Ask requires interactive mode. Please answer this batch:\n\n${questionsText}` }],
+                  isError: true,
+                  details: { questions: batchQuestions, response: null, cancelled: true } as BatchAskToolDetails,
+               };
+            }
+
+            onUpdate?.({
+               content: [{ type: "text", text: `Waiting for batch answers (0/${batchQuestions.length})...` }],
+               details: { questions: batchQuestions, response: null, cancelled: false },
+            });
+
+            let responses: AskResponse[] | null = null;
+            let overlayHandle: OverlayHandle | undefined;
+            let removeOverlayInputListener: (() => void) | undefined;
+            let removeAbortListener: (() => void) | undefined;
+            let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+            const deadline = timeout && timeout > 0 ? Date.now() + timeout : undefined;
+            let hasAnnouncedHide = false;
+            pi.events.emit("herdr:blocked", { active: true, label: "Waiting for user response" });
+            try {
+               const overlayToggle = shortcuts.overlayToggle;
+               if (
+                  effectiveDisplayMode === "overlay"
+                  && !overlayToggle.disabled
+                  && typeof ctx.ui.onTerminalInput === "function"
+               ) {
+                  removeOverlayInputListener = ctx.ui.onTerminalInput((data) => {
+                     if (!overlayToggle.matches(data) || !overlayHandle) return undefined;
+                     const nextHidden = !overlayHandle.isHidden();
+                     overlayHandle.setHidden(nextHidden);
+                     if (nextHidden && !hasAnnouncedHide) {
+                        hasAnnouncedHide = true;
+                        ctx.ui.notify?.(`ask_user hidden — press ${overlayToggle.spec} to reopen`, "info");
+                     }
+                     return { consume: true };
+                  });
+               }
+
+               const customResult = await ctx.ui.custom<AskResponse[] | null>(
+                  (tui, theme, keybindings, done) => {
+                     if (signal) {
+                        const onAbort = () => done(null);
+                        if (signal.aborted) onAbort();
+                        else {
+                           signal.addEventListener("abort", onAbort, { once: true });
+                           removeAbortListener = () => signal.removeEventListener("abort", onAbort);
+                        }
+                     }
+                     if (deadline !== undefined) {
+                        const remaining = Math.max(0, deadline - Date.now());
+                        if (remaining === 0) done(null);
+                        else timeoutHandle = setTimeout(() => done(null), remaining);
+                     }
+                     return new BatchAskComponent(
+                        batchPages,
+                        effectiveDisplayMode,
+                        effectiveSingleSelectLayout,
+                        tui,
+                        theme,
+                        keybindings,
+                        shortcuts,
+                        done,
+                        (answeredCount) => onUpdate?.({
+                           content: [{ type: "text", text: `Waiting for batch answers (${answeredCount}/${batchQuestions.length})...` }],
+                           details: { questions: batchQuestions, response: null, cancelled: false },
+                        }),
+                     );
+                  },
+                  buildCustomUIOptions(effectiveDisplayMode, (handle) => {
+                     overlayHandle = handle;
+                  }),
+               );
+
+               removeAbortListener?.();
+               removeAbortListener = undefined;
+               if (timeoutHandle) clearTimeout(timeoutHandle);
+               timeoutHandle = undefined;
+
+               if (customResult !== undefined) {
+                  responses = customResult;
+               } else {
+                  const fallbackResponses: AskResponse[] = [];
+                  for (const page of batchPages) {
+                     if (signal?.aborted) break;
+                     const remainingTimeout = deadline === undefined ? undefined : Math.max(0, deadline - Date.now());
+                     if (remainingTimeout === 0) break;
+                     const response = await askViaDialogs(
+                        ctx.ui,
+                        page.question,
+                        page.context,
+                        page.options,
+                        page.allowMultiple,
+                        page.allowFreeform,
+                        page.allowComment,
+                        remainingTimeout,
+                     );
+                     if (!response) break;
+                     fallbackResponses.push(response);
+                  }
+                  responses = fallbackResponses.length === batchPages.length ? fallbackResponses : null;
+               }
+            } catch (error) {
+               const message = error instanceof Error ? `${error.message}\n${error.stack ?? ""}` : String(error);
+               return {
+                  content: [{ type: "text", text: `Ask tool failed: ${message}` }],
+                  isError: true,
+                  details: { error: message },
+               };
+            } finally {
+               removeOverlayInputListener?.();
+               removeAbortListener?.();
+               if (timeoutHandle) clearTimeout(timeoutHandle);
+               pi.events.emit("herdr:blocked", { active: false });
+            }
+
+            const batchResponse = responses ? aggregateBatchResponses(batchQuestions, responses) : null;
+            if (!batchResponse) {
+               pi.events.emit("ask:cancelled", { questions: batchQuestions });
+               return {
+                  content: [{ type: "text", text: "User cancelled the batch" }],
+                  details: { questions: batchQuestions, response: null, cancelled: true } as BatchAskToolDetails,
+               };
+            }
+
+            pi.events.emit("ask:answered", { questions: batchQuestions, response: batchResponse });
+            return {
+               content: [{ type: "text", text: `User answered batch:\n${formatBatchResponseSummary(batchResponse)}` }],
+               details: { questions: batchQuestions, response: batchResponse, cancelled: false } as BatchAskToolDetails,
+            };
+         }
+
+         if (!question) throw new Error("Validated question is missing");
+
+         const options = rawOptions.map(coerceOption).filter((option): option is QuestionOption => option !== null);
 
          if (rawOptions.length > 0 && options.length === 0) {
             return {
@@ -2282,9 +2764,10 @@ export default function(pi: ExtensionAPI) {
 
       renderCall(args, theme) {
          const question = (args.question as string) || "";
+         const questions = Array.isArray(args.questions) ? args.questions : [];
          const rawOptions = Array.isArray(args.options) ? args.options : [];
          let text = theme.fg("toolTitle", theme.bold("ask_user "));
-         text += theme.fg("muted", question);
+         text += theme.fg("muted", questions.length > 0 ? `${questions.length} questions` : question);
          if (rawOptions.length > 0) {
             const labels = rawOptions.map((o: unknown) => coerceOption(o)?.title ?? "<invalid>");
             text += "\n" + theme.fg("dim", `  ${rawOptions.length} option(s): ${labels.join(", ")}`);
@@ -2299,7 +2782,7 @@ export default function(pi: ExtensionAPI) {
       },
 
       renderResult(result, options, theme) {
-         const details = result.details as (AskToolDetails & { error?: string }) | undefined;
+         const details = result.details as ((AskToolDetails | BatchAskToolDetails) & { error?: string }) | undefined;
 
          if (details?.error) {
             return new Text(theme.fg("error", `✗ ${details.error}`), 0, 0);
@@ -2315,6 +2798,14 @@ export default function(pi: ExtensionAPI) {
 
          if (!details || details.cancelled || !details.response) {
             return new Text(theme.fg("warning", "Cancelled"), 0, 0);
+         }
+
+         if ("questions" in details) {
+            let text = theme.fg("success", `✓ ${details.response.answers.length} answers`);
+            if (options.expanded) {
+               text += "\n" + theme.fg("dim", formatBatchResponseSummary(details.response));
+            }
+            return new Text(text, 0, 0);
          }
 
          const response = details.response;
