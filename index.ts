@@ -577,6 +577,10 @@ class MultiSelectList implements Component {
             this.toggle(idx);
             this.selectedIndex = Math.min(idx, count - 1);
             this.invalidate();
+         } else if (this.allowFreeform && idx === this.options.length) {
+            this.selectedIndex = this.getFreeformIndex();
+            this.invalidate();
+            this.onEnterFreeform?.();
          }
          return;
       }
@@ -650,9 +654,10 @@ class MultiSelectList implements Component {
          }
 
          if (this.isFreeformRow(i)) {
+            const num = theme.fg("dim", `${this.options.length + 1}.`);
             const label = theme.fg("text", theme.bold("Type something."));
             const desc = theme.fg("muted", "Enter a custom response");
-            const line = `${prefix}   ${label} ${theme.fg("dim", "—")} ${desc}`;
+            const line = `${prefix} ${num} ${label} ${theme.fg("dim", "—")} ${desc}`;
             block.push(truncateToWidth(line, width, ""));
             blocks.push(block);
             continue;
@@ -1004,11 +1009,17 @@ class WrappedSingleSelectList implements Component {
       }
 
       const numMatch = data.match(/^[1-9]$/);
-      if (numMatch && filteredOptions.length > 0) {
+      if (numMatch) {
          const idx = Number.parseInt(numMatch[0], 10) - 1;
          if (idx >= 0 && idx < filteredOptions.length) {
             this.selectedIndex = idx;
             this.invalidate();
+            return;
+         }
+         if (this.allowFreeform && idx === filteredOptions.length) {
+            this.selectedIndex = filteredOptions.length + (this.allowComment ? 1 : 0);
+            this.invalidate();
+            this.onEnterFreeform?.();
             return;
          }
       }

@@ -83,6 +83,20 @@ describe("renderSingleSelectRows", () => {
 		expect(rows.map((r) => r.line).filter((line) => line.trim() === "aaaaaaaa")).toHaveLength(2);
 	});
 
+	test("numbers the freeform response after the canned options", () => {
+		const rows = renderSingleSelectRows({
+			options: [{ title: "Alpha" }, { title: "Beta" }],
+			selectedIndex: 3,
+			width: 60,
+			allowFreeform: true,
+			allowComment: true,
+		});
+
+		const rendered = rows.map((row) => row.line).join("\n");
+		expect(rendered).toContain("3. Type something.");
+		expect(rendered).not.toContain("4. Type something.");
+	});
+
 	test("marks selected item rows as selected in annotated output", () => {
 		const rows = renderSingleSelectRows({
 			options: [

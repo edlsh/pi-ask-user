@@ -1031,6 +1031,128 @@ describe("ask_user", () => {
       expect(result.details.cancelled).toBe(true);
    });
 
+   test("keeps canned single-select number keys as highlight-only shortcuts", async () => {
+      const tool = await setupTool();
+
+      const result = await tool.execute(
+         "tool-call-id",
+         {
+            question: "Which option should we use?",
+            options: ["Alpha", "Beta"],
+         },
+         undefined,
+         undefined,
+         {
+            hasUI: true,
+            ui: {
+               custom: async (factory: any) => {
+                  let resolved: string | null | undefined;
+                  const component = factory(
+                     { requestRender() { }, terminal: { rows: 24 } },
+                     createTheme(),
+                     createKeybindings(),
+                     (value: string | null) => {
+                        resolved = value;
+                     },
+                  );
+
+                  component.handleInput("2");
+                  expect(resolved).toBeUndefined();
+                  component.handleInput("enter");
+                  return resolved ?? null;
+               },
+            },
+         },
+      );
+
+      expect(result.details.response).toEqual({ kind: "selection", selections: ["Beta"] });
+      expect(result.details.cancelled).toBe(false);
+   });
+
+   test("enters freeform mode by pressing its number in single-select mode", async () => {
+      const tool = await setupTool();
+
+      const result = await tool.execute(
+         "tool-call-id",
+         {
+            question: "Which option should we use?",
+            options: ["Alpha", "Beta"],
+            allowFreeform: true,
+            allowComment: true,
+         },
+         undefined,
+         undefined,
+         {
+            hasUI: true,
+            ui: {
+               custom: async (factory: any) => {
+                  let resolved: string | null | undefined;
+                  const component = factory(
+                     { requestRender() { }, terminal: { rows: 24 } },
+                     createTheme(),
+                     createKeybindings(),
+                     (value: string | null) => {
+                        resolved = value;
+                     },
+                  );
+
+                  component.handleInput("3");
+                  editorText = "A custom answer";
+                  component.handleInput("enter");
+                  return resolved ?? null;
+               },
+            },
+         },
+      );
+
+      expect(result.details.response).toEqual({ kind: "freeform", text: "A custom answer" });
+      expect(result.details.cancelled).toBe(false);
+   });
+
+   test("enters freeform mode by pressing its number in multi-select mode", async () => {
+      const tool = await setupTool();
+      let rendered = "";
+
+      const result = await tool.execute(
+         "tool-call-id",
+         {
+            question: "Which options should we use?",
+            options: ["Alpha", "Beta"],
+            allowMultiple: true,
+            allowFreeform: true,
+            allowComment: true,
+         },
+         undefined,
+         undefined,
+         {
+            hasUI: true,
+            ui: {
+               custom: async (factory: any) => {
+                  let resolved: unknown;
+                  const component = factory(
+                     { requestRender() { }, terminal: { rows: 24 } },
+                     createTheme(),
+                     createKeybindings(),
+                     (value: unknown) => {
+                        resolved = value;
+                     },
+                  );
+
+                  rendered = ((component as any).multiSelectList as any).render(80).join("\n");
+                  component.handleInput("3");
+                  editorText = "Another custom answer";
+                  component.handleInput("enter");
+                  return resolved ?? null;
+               },
+            },
+         },
+      );
+
+      expect(rendered).toContain("3. Type something.");
+      expect(result.details.response).toEqual({ kind: "freeform", text: "Another custom answer" });
+      expect(result.details.cancelled).toBe(false);
+   });
+
    test("uses shared confirm keybinding in single-select mode", async () => {
       const tool = await setupTool();
 

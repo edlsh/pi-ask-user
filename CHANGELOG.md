@@ -4,6 +4,7 @@
 
 ### Added
 
+- The custom/freeform response row now displays the next option number and opens directly when that number key is pressed, without changing canned-answer number-key behavior.
 - Responsive context collapse for overlay and inline prompts; oversized context preserves the full value while keeping the question and choices visible, and `ctrl+e` toggles the expanded view.
 - Configurable `auto` or always-single-column layouts for wide single-select prompts. Closes #30.
 - `herdr:blocked` lifecycle events while waiting for structured or freeform user input.

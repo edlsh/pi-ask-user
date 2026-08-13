@@ -101,7 +101,7 @@ function buildItemBlocks(
 		const pointer = itemIndex === selectedIndex ? "→" : " ";
 		const lines: string[] = [];
 
-		if (item.type === "comment-toggle" || item.type === "freeform") {
+		if (item.type === "comment-toggle") {
 			const prefix = `${pointer}   `;
 			const wrapped = wrapText(item.option.title, Math.max(8, normalizedWidth - prefix.length));
 			wrapped.forEach((line, lineIndex) => {
@@ -110,7 +110,8 @@ function buildItemBlocks(
 			return { itemIndex, lines };
 		}
 
-		const numberPrefix = `${pointer} ${itemIndex + 1}. `;
+		const optionNumber = item.type === "freeform" ? options.length + 1 : itemIndex + 1;
+		const numberPrefix = `${pointer} ${optionNumber}. `;
 		const continuationPrefix = " ".repeat(numberPrefix.length);
 		const titleLines = wrapText(item.option.title, Math.max(8, normalizedWidth - numberPrefix.length));
 		titleLines.forEach((line, lineIndex) => {
