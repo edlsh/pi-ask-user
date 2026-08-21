@@ -168,7 +168,17 @@ beforeAll(() => {
             return super.render().map((line) => this.mdTheme.bold(line));
          }
       },
-      matchesKey: (data: string, key: string) => data === key,
+      isKeyRelease: (data: string) => data === "\x1b[111;3:3u",
+      isKeyRepeat: (data: string) => data === "\x1b[111;3:2u",
+      matchesKey: (data: string, key: string) => {
+         if (data === key) return true;
+         // Mirror pi-tui's real behavior for alt+letter under the kitty keyboard
+         // protocol: press, repeat, and release CSI-u sequences all match
+         // (e.g. ESC[111;3u / ESC[111;3:2u / ESC[111;3:3u for alt+o).
+         const match = /^\x1b\[(\d+);3(?::\d+)?u$/.exec(data);
+         if (!match) return false;
+         return Number(match[1]) === key.split("+").pop()!.charCodeAt(0);
+      },
       Spacer: class {
          render() {
             return [""];
@@ -691,6 +701,48 @@ describe("ask_user", () => {
          expect(notifications).toHaveLength(1);
          expect(notifications[0]?.message).toContain("alt+o");
          expect(notifications[0]?.type).toBe("info");
+      });
+
+      test("ignores kitty-protocol key-release and key-repeat sequences for alt+o", async () => {
+         const tool = await setupTool();
+         const { handle, calls } = createOverlayHandle();
+         let inputHandler: ((data: string) => any) | undefined;
+         const results: Array<{ seq: string; result: any }> = [];
+
+         await tool.execute(
+            "tool-call-id",
+            { question: "Q", options: ["A"] },
+            undefined,
+            undefined,
+            {
+               hasUI: true,
+               ui: {
+                  custom: async (_factory: any, options: any) => {
+                     options.onHandle?.(handle);
+                     // Press (CSI-u, no event type), release (event type 3), and
+                     // repeat (event type 2) sequences for alt+o. Assertions run
+                     // after execute() because the extension catches custom()
+                     // rejections and would swallow expect() failures here.
+                     results.push({ seq: "press", result: inputHandler?.("\x1b[111;3u") });
+                     results.push({ seq: "release", result: inputHandler?.("\x1b[111;3:3u") });
+                     results.push({ seq: "repeat", result: inputHandler?.("\x1b[111;3:2u") });
+                     return null;
+                  },
+                  onTerminalInput: (handler: (data: string) => any) => {
+                     inputHandler = handler;
+                     return () => { };
+                  },
+                  notify: () => { },
+               },
+            },
+         );
+
+         // The press hides the overlay; the release and repeat sequences must
+         // not re-show it (they previously matched alt+o like a press).
+         expect(results[0]?.result).toEqual({ consume: true });
+         expect(results[1]?.result).toBeUndefined();
+         expect(results[2]?.result).toBeUndefined();
+         expect(calls).toEqual([true]);
       });
 
       test("does not consume ctrl+o from the terminal listener", async () => {

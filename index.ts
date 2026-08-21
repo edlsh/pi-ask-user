@@ -16,6 +16,8 @@ import {
    Editor,
    type EditorTheme,
    fuzzyFilter,
+   isKeyRelease,
+   isKeyRepeat,
    Key,
    type Keybinding,
    type KeybindingsManager,
@@ -2218,6 +2220,12 @@ export default function(pi: ExtensionAPI) {
                && typeof ctx.ui.onTerminalInput === "function"
             ) {
                removeOverlayInputListener = ctx.ui.onTerminalInput((data) => {
+                  // The kitty keyboard protocol (enabled by pi) sends separate press,
+                  // repeat, and release CSI-u sequences. matchesKey() matches all
+                  // event types, so without this filter one physical press toggles
+                  // twice: keydown hides the overlay, keyup re-shows it. One press
+                  // must be exactly one toggle.
+                  if (isKeyRelease(data) || isKeyRepeat(data)) return undefined;
                   if (!overlayToggle.matches(data) || !overlayHandle) return undefined;
                   const nextHidden = !overlayHandle.isHidden();
                   overlayHandle.setHidden(nextHidden);
