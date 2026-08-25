@@ -1935,9 +1935,8 @@ async function askViaDialogs(
    allowMultiple: boolean,
    allowFreeform: boolean,
    allowComment: boolean,
-   timeout?: number,
+   dialogOpts?: { signal?: AbortSignal; timeout?: number },
 ): Promise<AskUIResult | null> {
-   const dialogOpts = timeout ? { timeout } : undefined;
    const prompt = context ? `${question}\n\nContext:\n${context}` : question;
 
    if (allowMultiple) {
@@ -2110,6 +2109,9 @@ export default function(pi: ExtensionAPI) {
          };
          const options = rawOptions.map(coerceOption).filter((option): option is QuestionOption => option !== null);
          const normalizedContext = context?.trim() || undefined;
+         const dialogOpts = signal
+            ? (timeout ? { signal, timeout } : { signal })
+            : (timeout ? { timeout } : undefined);
 
          if (rawOptions.length > 0 && options.length === 0) {
             return {
@@ -2149,7 +2151,7 @@ export default function(pi: ExtensionAPI) {
             pi.events.emit("herdr:blocked", { active: true, label: "Waiting for user response" });
             let answer: string | undefined;
             try {
-               answer = await ctx.ui.input(prompt, "Type your answer...", timeout ? { timeout } : undefined);
+               answer = await ctx.ui.input(prompt, "Type your answer...", dialogOpts);
             } finally {
                pi.events.emit("herdr:blocked", { active: false });
             }
@@ -2240,7 +2242,16 @@ export default function(pi: ExtensionAPI) {
                result = customResult;
             } else {
                // RPC/headless mode: degrade to select()/input() dialog protocol
-               result = await askViaDialogs(ctx.ui, question, normalizedContext, options, allowMultiple, allowFreeform, allowComment, timeout);
+               result = await askViaDialogs(
+                  ctx.ui,
+                  question,
+                  normalizedContext,
+                  options,
+                  allowMultiple,
+                  allowFreeform,
+                  allowComment,
+                  dialogOpts,
+               );
             }
          } catch (error) {
             const message =

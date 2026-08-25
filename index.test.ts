@@ -344,6 +344,36 @@ describe("ask_user", () => {
       ]);
    });
 
+   test("tool abort cancels freeform input", async () => {
+      const tool = await setupTool();
+      const controller = new AbortController();
+      let capturedOpts: any;
+
+      const execution = tool.execute(
+         "tool-call-id",
+         { question: "Why?", options: [] },
+         controller.signal,
+         undefined,
+         {
+            hasUI: true,
+            ui: {
+               input: async (_title: string, _placeholder: string, opts: any) => {
+                  capturedOpts = opts;
+                  return new Promise((resolve) => {
+                     opts.signal.addEventListener("abort", () => resolve(undefined), { once: true });
+                  });
+               },
+            },
+         },
+      );
+
+      controller.abort();
+      const result = await execution;
+
+      expect(capturedOpts).toEqual({ signal: controller.signal });
+      expect(result.details.cancelled).toBe(true);
+   });
+
    test("uses overlay mode by default", async () => {
       const tool = await setupTool();
       let capturedOptions: any;
@@ -2952,8 +2982,9 @@ describe("ask_user", () => {
          expect(selectTitle).toContain("The sky is blue today.");
       });
 
-      test("passes timeout to dialog methods", async () => {
+      test("passes the tool abort signal and timeout to dialog methods", async () => {
          const tool = await setupTool();
+         const controller = new AbortController();
          let capturedOpts: any;
 
          await tool.execute(
@@ -2964,7 +2995,7 @@ describe("ask_user", () => {
                allowFreeform: false,
                timeout: 5000,
             },
-            undefined,
+            controller.signal,
             undefined,
             {
                hasUI: true,
@@ -2979,7 +3010,7 @@ describe("ask_user", () => {
             },
          );
 
-         expect(capturedOpts).toEqual({ timeout: 5000 });
+         expect(capturedOpts).toEqual({ signal: controller.signal, timeout: 5000 });
       });
    });
 });
