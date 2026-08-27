@@ -123,15 +123,70 @@ interface AskToolDetails {
 }
 
 type AskUIResult = AskResponse;
+type AskDialogResult = AskUIResult | null | { error: string };
 
 // Key aliases models fall back to when a schema-mangling proxy (Google
 // function calling, Codex-style backends, cmux) strips the option shape and
 // the model has to guess. See issue #22.
 const OPTION_TITLE_KEYS = ["title", "label", "text", "value", "name", "option"] as const;
+const MAX_QUESTION_LENGTH = 8 * 1024;
+const MAX_CONTEXT_LENGTH = 16 * 1024;
+const MAX_OPTIONS = 100;
+const MAX_OPTION_TITLE_LENGTH = 512;
+const MAX_OPTION_DESCRIPTION_LENGTH = 2 * 1024;
+const MAX_RESPONSE_LENGTH = 8 * 1024;
+
+// Tool parameters frequently contain summaries of external files, web pages, or
+// MCP responses. Never let those values carry terminal control sequences into
+// the prompt, transcript, or event payloads.
+function sanitizeDisplayText(value: string): string {
+   return value
+      // OSC, DCS, SOS, PM, and APC strings terminate with BEL or ST.
+      .replace(/\u001b(?:\][\s\S]*?(?:\u0007|\u001b\\)|[PX^_][\s\S]*?\u001b\\)/g, "")
+      // CSI and the remaining two-byte ESC sequences.
+      .replace(/\u001b(?:\[[0-?]*[ -/]*[@-~]|[@-_])/g, "")
+      // Keep newlines and tabs for the prompt layout; strip the remaining C0,
+      // C1, and bidirectional formatting controls that can spoof terminal text.
+      .replace(/[\u0000-\u0008\u000B-\u001F\u007F-\u009F\u202A-\u202E\u2066-\u2069]/g, "");
+}
+
+function validateTextLength(name: string, value: string | undefined, maximum: number): string | undefined {
+   return value !== undefined && value.length > maximum ? `${name} exceeds the ${maximum}-character limit` : undefined;
+}
+
+function validateAskInput(
+   question: string,
+   context: string | undefined,
+   rawOptions: unknown[],
+   options: QuestionOption[],
+): string | undefined {
+   return validateTextLength("question", question, MAX_QUESTION_LENGTH)
+      ?? validateTextLength("context", context, MAX_CONTEXT_LENGTH)
+      ?? (rawOptions.length > MAX_OPTIONS ? `options exceeds the ${MAX_OPTIONS}-item limit` : undefined)
+      ?? options.map((option) =>
+         validateTextLength("option title", option.title, MAX_OPTION_TITLE_LENGTH)
+         ?? validateTextLength("option description", option.description, MAX_OPTION_DESCRIPTION_LENGTH),
+      ).find((error): error is string => error !== undefined);
+}
+
+function validateResponse(response: AskResponse): string | undefined {
+   if (response.kind === "freeform") return validateTextLength("response", response.text, MAX_RESPONSE_LENGTH);
+   return response.selections.map((selection) => validateTextLength("response selection", selection, MAX_RESPONSE_LENGTH))
+      .find((error): error is string => error !== undefined)
+      ?? validateTextLength("response comment", response.comment, MAX_RESPONSE_LENGTH);
+}
+
+function createErrorResult(error: string) {
+   return {
+      content: [{ type: "text", text: `Ask tool failed: ${error}` }],
+      isError: true,
+      details: { error },
+   };
+}
 
 function coerceOption(option: unknown): QuestionOption | null {
    if (typeof option === "string" || typeof option === "number" || typeof option === "boolean") {
-      const title = String(option).trim();
+      const title = sanitizeDisplayText(String(option)).trim();
       return title ? { title } : null;
    }
    if (option && typeof option === "object") {
@@ -140,8 +195,11 @@ function coerceOption(option: unknown): QuestionOption | null {
          const value = record[key];
          if (typeof value === "string" && value.trim()) {
             const description =
-               typeof record.description === "string" && record.description.trim() ? record.description : undefined;
-            return description ? { title: value.trim(), description } : { title: value.trim() };
+               typeof record.description === "string" && record.description.trim()
+                  ? sanitizeDisplayText(record.description).trim()
+                  : undefined;
+            const title = sanitizeDisplayText(value).trim();
+            return description ? { title, description } : { title };
          }
       }
    }
@@ -158,7 +216,7 @@ function formatOptionsForMessage(options: QuestionOption[]): string {
 }
 
 function normalizeOptionalComment(text: string | null | undefined): string | undefined {
-   const trimmed = text?.trim();
+   const trimmed = text === undefined || text === null ? undefined : sanitizeDisplayText(text).trim();
    return trimmed ? trimmed : undefined;
 }
 
@@ -181,12 +239,12 @@ function parseBooleanPreference(value: string | undefined): boolean | undefined 
 }
 
 function createFreeformResponse(text: string | null | undefined): AskResponse | null {
-   const trimmed = text?.trim();
+   const trimmed = text === undefined || text === null ? undefined : sanitizeDisplayText(text).trim();
    return trimmed ? { kind: "freeform", text: trimmed } : null;
 }
 
 function createSelectionResponse(selections: string[], comment?: string | null): AskResponse | null {
-   const normalizedSelections = selections.map((selection) => selection.trim()).filter(Boolean);
+   const normalizedSelections = selections.map((selection) => sanitizeDisplayText(selection).trim()).filter(Boolean);
    if (normalizedSelections.length === 0) return null;
 
    const normalizedComment = normalizeOptionalComment(comment);
@@ -208,11 +266,26 @@ function buildCommentPrompt(prompt: string, selections: string[]): string {
    return `${prompt}\n\n${label}:\n${lines}`;
 }
 
-function parseDialogSelections(input: string): string[] {
-   return input
+function parseDialogSelections(input: string, options: QuestionOption[], allowFreeform: boolean): AskResponse | null {
+   const selections = input
       .split(",")
       .map((selection) => selection.trim())
       .filter(Boolean);
+
+   if (selections.length === 0) return null;
+   if (allowFreeform && selections.length === 1 && selections[0] === "0") {
+      return { kind: "freeform", text: "" };
+   }
+
+   const indexes = selections.map((selection) => Number.parseInt(selection, 10));
+   if (
+      indexes.some((index, position) => !/^\d+$/.test(selections[position]!) || index < 1 || index > options.length)
+      || new Set(indexes).size !== indexes.length
+   ) {
+      return null;
+   }
+
+   return createSelectionResponse(indexes.map((index) => options[index - 1]!.title));
 }
 
 function isCancelledInput(value: unknown): value is null | undefined {
@@ -1936,32 +2009,41 @@ async function askViaDialogs(
    allowFreeform: boolean,
    allowComment: boolean,
    timeout?: number,
-): Promise<AskUIResult | null> {
+): Promise<AskDialogResult> {
    const dialogOpts = timeout ? { timeout } : undefined;
    const prompt = context ? `${question}\n\nContext:\n${context}` : question;
 
    if (allowMultiple) {
-      const optionList = formatOptionsForMessage(options);
+      const optionList = [formatOptionsForMessage(options), ...(allowFreeform ? ["0. Type a custom response"] : [])]
+         .filter(Boolean)
+         .join("\n");
       const rawSelections = await ui.input(
-         `${prompt}\n\nOptions (select one or more):\n${optionList}`,
-         "Type your selection(s)...",
+         `${prompt}\n\nOptions (select one or more by number):\n${optionList}`,
+         "Type selection numbers, e.g. 1,3...",
          dialogOpts,
       ) as string | undefined;
       if (isCancelledInput(rawSelections)) return null;
 
-      const selections = parseDialogSelections(rawSelections);
-      if (selections.length === 0) return null;
+      const response = parseDialogSelections(rawSelections, options, allowFreeform);
+      if (!response) {
+         return { error: "Invalid multi-select selection. Enter comma-separated option numbers." };
+      }
+      if (response.kind === "freeform") {
+         const answer = await ui.input(prompt, "Type your answer...", dialogOpts) as string | undefined;
+         if (isCancelledInput(answer)) return null;
+         return createFreeformResponse(answer);
+      }
 
       if (!allowComment) {
-         return createSelectionResponse(selections);
+         return response;
       }
 
       const comment = await ui.input(
-         buildCommentPrompt(prompt, selections),
+         buildCommentPrompt(prompt, response.selections),
          "Optional comment (press Enter to skip)...",
          dialogOpts,
       ) as string | undefined;
-      return createSelectionResponse(selections, comment);
+      return createSelectionResponse(response.selections, comment);
    }
 
    const selectOptions = options.map((o) => o.title);
@@ -2007,9 +2089,10 @@ export default function(pi: ExtensionAPI) {
       // (potentially with side effects) before the user sees the prompt.
       executionMode: "sequential",
       parameters: Type.Object({
-         question: Type.String({ description: "The question to ask the user" }),
+         question: Type.String({ maxLength: MAX_QUESTION_LENGTH, description: "The question to ask the user" }),
          context: Type.Optional(
             Type.String({
+               maxLength: MAX_CONTEXT_LENGTH,
                description: "Relevant context to show before the question (summary of findings)",
             }),
          ),
@@ -2021,12 +2104,12 @@ export default function(pi: ExtensionAPI) {
                // and produce empty options. Plain strings are still accepted at
                // runtime for older transcripts. See issue #22.
                Type.Object({
-                  title: Type.String({ description: "Short title for this option" }),
+                  title: Type.String({ maxLength: MAX_OPTION_TITLE_LENGTH, description: "Short title for this option" }),
                   description: Type.Optional(
-                     Type.String({ description: "Longer description explaining this option" }),
+                     Type.String({ maxLength: MAX_OPTION_DESCRIPTION_LENGTH, description: "Longer description explaining this option" }),
                   ),
                }),
-               { description: "List of options for the user to choose from" },
+               { maxItems: MAX_OPTIONS, description: "List of options for the user to choose from" },
             ),
          ),
          allowMultiple: Type.Optional(
@@ -2073,7 +2156,7 @@ export default function(pi: ExtensionAPI) {
             };
          }
 
-         const {
+         let {
             question,
             context,
             options: rawOptions = [],
@@ -2086,6 +2169,7 @@ export default function(pi: ExtensionAPI) {
             commentToggleKey,
             timeout,
          } = params as AskParams;
+         question = sanitizeDisplayText(question);
          const envMode = process.env.PI_ASK_USER_DISPLAY_MODE?.trim().toLowerCase();
          const envDisplayMode: AskDisplayMode | undefined =
             envMode === "overlay" || envMode === "inline" ? envMode : undefined;
@@ -2109,7 +2193,10 @@ export default function(pi: ExtensionAPI) {
             ),
          };
          const options = rawOptions.map(coerceOption).filter((option): option is QuestionOption => option !== null);
-         const normalizedContext = context?.trim() || undefined;
+         const normalizedContext = context ? sanitizeDisplayText(context).trim() || undefined : undefined;
+
+         const validationError = validateAskInput(question, normalizedContext, rawOptions, options);
+         if (validationError) return createErrorResult(validationError);
 
          if (rawOptions.length > 0 && options.length === 0) {
             return {
@@ -2162,6 +2249,9 @@ export default function(pi: ExtensionAPI) {
                };
             }
 
+            const responseError = validateResponse(response);
+            if (responseError) return createErrorResult(responseError);
+
             pi.events.emit("ask:answered", { question, context: normalizedContext, response });
             return {
                content: [{ type: "text", text: `User answered: ${formatResponseSummary(response)}` }],
@@ -2174,7 +2264,7 @@ export default function(pi: ExtensionAPI) {
             details: { question, context: normalizedContext, options, response: null, cancelled: false },
          });
 
-         let result: AskUIResult | null;
+         let result: AskDialogResult;
          let overlayHandle: OverlayHandle | undefined;
          let removeOverlayInputListener: (() => void) | undefined;
          let hasAnnouncedHide = false;
@@ -2242,18 +2332,14 @@ export default function(pi: ExtensionAPI) {
                // RPC/headless mode: degrade to select()/input() dialog protocol
                result = await askViaDialogs(ctx.ui, question, normalizedContext, options, allowMultiple, allowFreeform, allowComment, timeout);
             }
-         } catch (error) {
-            const message =
-               error instanceof Error ? `${error.message}\n${error.stack ?? ""}` : String(error);
-            return {
-               content: [{ type: "text", text: `Ask tool failed: ${message}` }],
-               isError: true,
-               details: { error: message },
-            };
+         } catch {
+            return createErrorResult("Ask UI failed");
          } finally {
             removeOverlayInputListener?.();
             pi.events.emit("herdr:blocked", { active: false });
          }
+
+         if (result && "error" in result) return createErrorResult(result.error);
 
          if (result === null) {
             pi.events.emit("ask:cancelled", { question, context: normalizedContext, options });
@@ -2262,6 +2348,9 @@ export default function(pi: ExtensionAPI) {
                details: { question, context: normalizedContext, options, response: null, cancelled: true } as AskToolDetails,
             };
          }
+
+         const responseError = validateResponse(result);
+         if (responseError) return createErrorResult(responseError);
 
          pi.events.emit("ask:answered", {
             question,
