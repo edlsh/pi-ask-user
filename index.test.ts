@@ -266,6 +266,55 @@ function renderSingleSelectFromFactory(factory: unknown, width = 120): string {
 }
 
 describe("ask_user", () => {
+   test("removes terminal control sequences from prompt data before returning it", async () => {
+      const tool = await setupTool();
+      const escape = "\u001b]52;c;ZXZpbA==\u0007";
+
+      const result = await tool.execute(
+         "tool-call-id",
+         { question: `Continue?${escape}`, context: `Read this${escape}`, options: ["Yes"] },
+         undefined,
+         undefined,
+         { hasUI: false },
+      );
+
+      const text = result.content.map((part: { text?: string }) => part.text ?? "").join("\n");
+      expect(text).not.toContain("\u001b");
+      expect(result.details.question).toBe("Continue?");
+      expect(result.details.context).toBe("Read this");
+   });
+
+   test("rejects an oversized question before rendering a prompt", async () => {
+      const tool = await setupTool();
+
+      const result = await tool.execute(
+         "tool-call-id",
+         { question: "x".repeat(8 * 1024 + 1), options: ["Yes"] },
+         undefined,
+         undefined,
+         { hasUI: false },
+      );
+
+      expect(result.isError).toBe(true);
+      expect(result.details.error).toContain("question exceeds");
+   });
+
+   test("rejects an oversized user response before publishing it", async () => {
+      const tool = await setupTool();
+
+      const result = await tool.execute(
+         "tool-call-id",
+         { question: "Why?", options: [] },
+         undefined,
+         undefined,
+         { hasUI: true, ui: { input: async () => "x".repeat(8 * 1024 + 1) } },
+      );
+
+      expect(result.isError).toBe(true);
+      expect(result.details.error).toContain("response exceeds");
+      expect(emittedEvents.some((event) => event.name === "ask:answered")).toBe(false);
+   });
+
    test("registers with executionMode 'sequential' so the agent loop awaits the user's answer before other tool calls run", async () => {
       const tool = await setupTool();
       expect((tool as any).executionMode).toBe("sequential");
@@ -324,6 +373,23 @@ describe("ask_user", () => {
          { name: "herdr:blocked", payload: { active: true, label: "Waiting for user response" } },
          { name: "herdr:blocked", payload: { active: false } },
       ]);
+   });
+
+   test("does not return UI exception details to the model", async () => {
+      const tool = await setupTool();
+
+      const result = await tool.execute(
+         "tool-call-id",
+         { question: "Continue?", options: ["Yes"] },
+         undefined,
+         undefined,
+         { hasUI: true, ui: { custom: async () => { throw new Error("internal path /tmp/private"); } } },
+      );
+
+      const text = result.content.map((part: { text?: string }) => part.text ?? "").join("\n");
+      expect(result.isError).toBe(true);
+      expect(text).not.toContain("/tmp/private");
+      expect(result.details.error).toBe("Ask UI failed");
    });
 
    test("clears Herdr blocked lifecycle when freeform input is cancelled", async () => {
@@ -2825,7 +2891,7 @@ describe("ask_user", () => {
          expect(result.details.response).toEqual({ kind: "freeform", text: "Purple" });
       });
 
-      test("multi-select degrades to input() with options in prompt", async () => {
+      test("multi-select fallback resolves numeric selections to offered options", async () => {
          const tool = await setupTool();
          let inputTitle = "";
 
@@ -2845,7 +2911,7 @@ describe("ask_user", () => {
                   select: async () => undefined,
                   input: async (title: string) => {
                      inputTitle = title;
-                     return "Red, Green";
+                     return "1, 3";
                   },
                },
             },
@@ -2857,6 +2923,28 @@ describe("ask_user", () => {
          expect(inputTitle).toContain("1. Red");
          expect(inputTitle).toContain("2. Blue");
          expect(inputTitle).toContain("3. Green");
+      });
+
+      test("multi-select fallback rejects selections outside the offered options", async () => {
+         const tool = await setupTool();
+
+         const result = await tool.execute(
+            "tool-call-id",
+            { question: "Pick colors", options: ["Red", "Blue"], allowMultiple: true, allowFreeform: false },
+            undefined,
+            undefined,
+            {
+               hasUI: true,
+               ui: {
+                  custom: async () => undefined,
+                  select: async () => undefined,
+                  input: async () => "3",
+               },
+            },
+         );
+
+         expect(result.isError).toBe(true);
+         expect(result.details.error).toContain("Invalid multi-select selection");
       });
 
       test("single-select can collect an optional comment after choosing an option", async () => {
