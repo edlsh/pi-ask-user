@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- Tool execution failures now throw so Pi records them as errors instead of treating returned `isError` fields as successful results.
+
 ### Added
 
 - Responsive context collapse for overlay and inline prompts; oversized context preserves the full value while keeping the question and choices visible, and `ctrl+e` toggles the expanded view.
