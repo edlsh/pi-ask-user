@@ -8,6 +8,10 @@
 - Configurable `auto` or always-single-column layouts for wide single-select prompts. Closes #30.
 - `herdr:blocked` lifecycle events while waiting for structured or freeform user input.
 
+### Changed
+
+- `ask:answered` and `ask:cancelled` events are redacted by default: they now carry only the question and the response `kind`, since every installed extension receives them. Set `PI_ASK_USER_EMIT_FULL_EVENTS=true` to restore the previous payloads with `context`, `options`, and the full `response`. The tool result's `details` is unchanged. Closes #51.
+
 ### Fixed
 
 - The overlay visibility shortcut now ignores Kitty keyboard repeat and release events, preventing one `alt+o` keypress from hiding and immediately reopening the prompt.
