@@ -55,6 +55,7 @@ Call `ask_user` with one decision at a time:
 - `allowMultiple`: `false` unless independent selections are genuinely needed
 - `allowFreeform`: usually `true`
 - `displayMode` *(optional)*: `"overlay"` (default) or `"inline"`. Use `"inline"` when preceding assistant context (summary, trade-offs, recommendation) is essential to the decision and should remain visible — overlays cover the conversation underneath. The user may set a personal default via the `PI_ASK_USER_DISPLAY_MODE` environment variable; only pass this when you intentionally want to override it for one call.
+- `contextExpanded` *(optional)*: `true` opens oversized context fully expanded instead of collapsed behind a one-line summary. The user may set a personal default via `PI_ASK_USER_CONTEXT_EXPANDED`; only pass this when the context is the evidence the user needs to weigh the options.
 ### 5) Commit the decision
 After response:
 - restate the decision in plain language

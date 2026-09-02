@@ -103,6 +103,7 @@ export PI_ASK_USER_ALLOW_COMMENT=true
 export PI_ASK_USER_OVERLAY_TOGGLE_KEY=alt+h
 export PI_ASK_USER_COMMENT_TOGGLE_KEY=alt+c
 export PI_ASK_USER_EMIT_FULL_EVENTS=true
+export PI_ASK_USER_CONTEXT_EXPANDED=true
 ```
 
 Environment variables must be present in the process that launches Pi. If Pi is launched from a desktop app or a different shell, changes in `~/.zshrc` may not be inherited; launch Pi from a terminal where `echo $PI_ASK_USER_DISPLAY_MODE` shows the expected value.
@@ -134,6 +135,16 @@ Effective order:
 1. Per-call `allowComment` parameter (if provided)
 2. `PI_ASK_USER_ALLOW_COMMENT` (`true`, `1`, `yes`, or `on`; corresponding false values are also accepted)
 3. Fallback default: `false`
+
+### Context expansion
+
+Oversized context collapses behind a one-line summary so the question and choices stay visible. To start expanded instead:
+
+1. Per-call `contextExpanded` parameter (if provided)
+2. `PI_ASK_USER_CONTEXT_EXPANDED` (`true`, `1`, `yes`, or `on`; corresponding false values are also accepted)
+3. Fallback default: `false`
+
+`ctrl+e` still toggles from whichever state the prompt opened in.
 
 ### Shortcuts
 

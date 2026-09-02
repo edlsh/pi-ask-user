@@ -1882,6 +1882,63 @@ describe("ask_user", () => {
       expect(result.details.context).toContain("Context detail.");
    });
 
+   describe("issue #45 contextExpanded preference", () => {
+      const renderFirstFrame = async (tool: RegisteredTool, params: Record<string, unknown>) => {
+         let firstFrame = "";
+         await tool.execute(
+            "tool-call-id",
+            {
+               question: "Which option should we use?",
+               context: "Context detail. ".repeat(80),
+               options: ["Alpha", "Beta"],
+               ...params,
+            },
+            undefined,
+            undefined,
+            {
+               hasUI: true,
+               ui: {
+                  custom: async (factory: any) => {
+                     const component = factory(
+                        { requestRender() { }, terminal: { rows: 40 } },
+                        createTheme(),
+                        createKeybindings(),
+                        () => { },
+                     );
+                     firstFrame = component.render(50).join("\n");
+                     return null;
+                  },
+               },
+            },
+         );
+         return firstFrame;
+      };
+
+      test("per-call contextExpanded: true opens oversized context expanded", async () => {
+         const tool = await setupTool();
+         const frame = await renderFirstFrame(tool, { contextExpanded: true });
+         expect(frame).toContain("Context detail.");
+         expect(frame).not.toContain("Context (");
+         expect(frame).toContain("ctrl+e collapse context");
+      });
+
+      test("uses PI_ASK_USER_CONTEXT_EXPANDED when the call omits contextExpanded", async () => {
+         stubEnv("PI_ASK_USER_CONTEXT_EXPANDED", "true");
+         const tool = await setupTool();
+         const frame = await renderFirstFrame(tool, {});
+         expect(frame).toContain("Context detail.");
+         expect(frame).not.toContain("Context (");
+      });
+
+      test("per-call contextExpanded: false overrides PI_ASK_USER_CONTEXT_EXPANDED", async () => {
+         stubEnv("PI_ASK_USER_CONTEXT_EXPANDED", "true");
+         const tool = await setupTool();
+         const frame = await renderFirstFrame(tool, { contextExpanded: false });
+         expect(frame).toContain("Context (");
+         expect(frame).not.toContain("Context detail.");
+      });
+   });
+
    test("scrolls constrained multi-select overlays to the comment and freeform rows", async () => {
       const tool = await setupTool();
       let initialRendered: string[] = [];
