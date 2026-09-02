@@ -1,4 +1,5 @@
 import { beforeAll, describe, expect, mock, onTestFinished, test } from "bun:test";
+import type { StringEnumBuilder } from "./index";
 
 let editorInputs: string[] = [];
 let editorText = "";
@@ -2730,6 +2731,65 @@ describe("ask_user", () => {
          expect(optionSchema).not.toContain("Type.Union");
          expect(optionSchema).not.toContain("anyOf");
          expect(optionSchema).not.toContain("oneOf");
+      });
+   });
+
+   describe("issue #38 typebox shim compatibility", () => {
+      // Fakes stand in for the real builders; their signatures are narrower than
+      // TypeBox's generics, so the cast is the only way to hand them to StringEnum.
+      const realTypeBoxLike = {
+         Unsafe: (schema: Record<string, unknown>) => ({ ...schema }),
+         Optional: (schema: unknown) => schema,
+         Union: () => {
+            throw new Error("union path must not run on real TypeBox");
+         },
+         Literal: (value: unknown) => value,
+      } as unknown as StringEnumBuilder;
+
+      type RuntimeSchema = {
+         runtime: true;
+         members: unknown[];
+         meta: Record<string, unknown>;
+         or: () => RuntimeSchema;
+         describe: (text: string) => RuntimeSchema;
+         default: (value: unknown) => RuntimeSchema;
+      };
+      const runtimeSchema = (members: unknown[], meta: Record<string, unknown> = {}): RuntimeSchema => ({
+         runtime: true,
+         members,
+         meta,
+         or: () => runtimeSchema(members, meta),
+         describe: (text) => runtimeSchema(members, { ...meta, description: text }),
+         default: (value) => runtimeSchema(members, { ...meta, default: value }),
+      });
+      const isRuntimeSchema = (value: unknown): value is RuntimeSchema =>
+         typeof value === "object" && value !== null && "or" in value && typeof value.or === "function";
+      // Mirrors oh-my-pi's legacy-typebox shim: Unsafe yields a plain object,
+      // Optional evaluates `asRuntime(schema).or(...)`, Union ignores options.
+      const ompOptional = (schema: unknown) => {
+         if (!isRuntimeSchema(schema)) throw new TypeError("asRuntime(schema).or is not a function");
+         return schema.or();
+      };
+      const ompLike = {
+         Unsafe: (schema: Record<string, unknown>) => ({ ...schema }),
+         Optional: ompOptional,
+         Union: (members: unknown[]) => runtimeSchema(members),
+         Literal: (value: unknown) => ({ literal: value }),
+      } as unknown as StringEnumBuilder;
+
+      test("emits the flat enum on hosts whose Type.Optional accepts Type.Unsafe", async () => {
+         const { StringEnum } = await import("./index");
+         const schema: unknown = StringEnum(["overlay", "inline"] as const, { description: "mode", default: "overlay" }, realTypeBoxLike);
+         expect(schema).toEqual({ type: "string", enum: ["overlay", "inline"], description: "mode", default: "overlay" });
+      });
+
+      test("falls back to a literal union that Type.Optional can wrap on omp-style shims", async () => {
+         const { StringEnum } = await import("./index");
+         const schema: unknown = StringEnum(["overlay", "inline"] as const, { description: "mode" }, ompLike);
+         if (!isRuntimeSchema(schema)) throw new Error("expected a runtime union schema");
+         expect(schema.members).toEqual([{ literal: "overlay" }, { literal: "inline" }]);
+         expect(schema.meta).toEqual({ description: "mode" });
+         expect(() => ompOptional(schema)).not.toThrow();
       });
    });
 

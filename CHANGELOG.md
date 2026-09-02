@@ -11,6 +11,7 @@
 ### Fixed
 
 - The overlay visibility shortcut now ignores Kitty keyboard repeat and release events, preventing one `alt+o` keypress from hiding and immediately reopening the prompt.
+- `ask_user` failing to register on oh-my-pi 17.2.x, whose TypeBox shim returned a plain object from `Type.Unsafe` that `Type.Optional` could not wrap (`asRuntime(schema).or is not a function`). `StringEnum` now probes the host builder and falls back to a literal union — which those hosts already collapse to the flat `{ type: "string", enum }` form — while real TypeBox keeps the flat enum Google's function-calling API requires. Closes #38.
 
 ## [0.13.1](https://github.com/edlsh/pi-ask-user/releases/tag/v0.13.1) - 2026-08-01
 
