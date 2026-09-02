@@ -206,7 +206,7 @@ beforeAll(() => {
 
 type RegisteredTool = {
    execute: (...args: any[]) => Promise<any>;
-   renderResult: (result: any, options: any, theme: any) => any;
+   renderResult: (result: any, options: any, theme: any, context?: any) => any;
 };
 
 function stubEnv(key: string, value: string): void {
@@ -243,6 +243,16 @@ async function setupTool(): Promise<RegisteredTool> {
    }
 
    return registeredTool;
+}
+
+async function rejectedError(promise: Promise<unknown>): Promise<Error> {
+   try {
+      await promise;
+   } catch (error) {
+      if (error instanceof Error) return error;
+      throw new Error(`Expected an Error rejection, received ${String(error)}`);
+   }
+   throw new Error("Expected promise to reject");
 }
 
 function createTheme() {
@@ -312,22 +322,39 @@ describe("ask_user", () => {
       ]);
    });
 
-   test("clears Herdr blocked lifecycle when structured UI rejects", async () => {
+   test("throws and clears Herdr blocked lifecycle when structured UI rejects", async () => {
       const tool = await setupTool();
 
-      const result = await tool.execute(
+      const error = await rejectedError(tool.execute(
          "tool-call-id",
          { question: "Continue?", options: ["Yes"] },
          undefined,
          undefined,
          { hasUI: true, ui: { custom: async () => { throw new Error("UI failed"); } } },
-      );
+      ));
 
-      expect(result.isError).toBe(true);
+      expect(error.message).toBe("UI failed");
       expect(emittedEvents.filter((event) => event.name === "herdr:blocked")).toEqual([
          { name: "herdr:blocked", payload: { active: true, label: "Waiting for user response" } },
          { name: "herdr:blocked", payload: { active: false } },
       ]);
+   });
+
+   test("throws when interactive UI is unavailable", async () => {
+      const tool = await setupTool();
+
+      const error = await rejectedError(tool.execute(
+         "tool-call-id",
+         { question: "Continue?", options: ["Yes", "No"] },
+         undefined,
+         undefined,
+         { hasUI: false },
+      ));
+
+      expect(error.message).toContain("Ask requires interactive mode");
+      expect(error.message).toContain("Continue?");
+      expect(error.message).toContain("1. Yes");
+      expect(error.message).toContain("2. No");
    });
 
    test("clears Herdr blocked lifecycle when freeform input is cancelled", async () => {
@@ -1016,6 +1043,21 @@ describe("ask_user", () => {
 
       expect(rendered).toContain("Waiting for user input...");
       expect(rendered).not.toContain("✓");
+   });
+
+   test("renders thrown tool failures as errors", async () => {
+      const tool = await setupTool();
+      const component = tool.renderResult(
+         { content: [{ type: "text", text: "UI failed" }], details: undefined },
+         { expanded: false, isPartial: false },
+         createTheme(),
+         { isError: true },
+      ) as any;
+
+      const rendered = component.render(120).join("\n");
+
+      expect(rendered).toContain("✗ UI failed");
+      expect(rendered).not.toContain("Cancelled");
    });
 
    test("marks each selected option in expanded multi-select results", async () => {
@@ -2796,11 +2838,11 @@ describe("ask_user", () => {
          ]);
       });
 
-      test("returns an error instead of opening UI when every supplied option is malformed", async () => {
+      test("throws instead of opening UI when every supplied option is malformed", async () => {
          const tool = await setupTool();
          let calls = 0;
 
-         const result = await tool.execute(
+         const error = await rejectedError(tool.execute(
             "tool-call-id",
             {
                question: "Pick one",
@@ -2825,13 +2867,10 @@ describe("ask_user", () => {
                   },
                },
             },
-         );
+         ));
 
-         const text = result.content.map((part: { text?: string }) => part.text ?? "").join("\n");
-         expect(result.isError).toBe(true);
-         expect(text).toContain("option(s) were malformed");
-         expect(text).toContain("{ \"title\": \"Short label\", \"description\": \"Optional detail\" }");
-         expect(result.details.error).toBe("Malformed options: no entry had a usable title");
+         expect(error.message).toContain("option(s) were malformed");
+         expect(error.message).toContain("{ \"title\": \"Short label\", \"description\": \"Optional detail\" }");
          expect(calls).toBe(0);
       });
 

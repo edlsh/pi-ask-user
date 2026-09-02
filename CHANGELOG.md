@@ -2,6 +2,10 @@
 
 ## [0.15.0](https://github.com/edlsh/pi-ask-user/releases/tag/v0.15.0) - 2026-09-02
 
+### Fixed
+
+- Tool execution failures now throw so Pi records them as errors instead of treating returned `isError` fields as successful results.
+
 ### Added
 
 - `contextExpanded` parameter and `PI_ASK_USER_CONTEXT_EXPANDED` preference for opening oversized context expanded by default; per-call value wins, `ctrl+e` still toggles. Closes #45. (#57)

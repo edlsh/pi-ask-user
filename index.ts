@@ -2174,19 +2174,11 @@ export default function(pi: ExtensionAPI) {
          };
 
          if (rawOptions.length > 0 && options.length === 0) {
-            return {
-               content: [
-                  {
-                     type: "text",
-                     text:
-                        `All ${rawOptions.length} option(s) were malformed, so nothing could be shown to the user. `
-                        + `Each option must be a plain string or an object like { "title": "Short label", "description": "Optional detail" }. `
-                        + `Call ask_user again with corrected options.`,
-                  },
-               ],
-               isError: true,
-               details: { error: "Malformed options: no entry had a usable title" },
-            };
+            throw new Error(
+               `All ${rawOptions.length} option(s) were malformed, so nothing could be shown to the user. `
+               + `Each option must be a plain string or an object like { "title": "Short label", "description": "Optional detail" }. `
+               + `Call ask_user again with corrected options.`,
+            );
          }
 
          if (!ctx.hasUI || !ctx.ui) {
@@ -2194,16 +2186,9 @@ export default function(pi: ExtensionAPI) {
             const freeformHint = allowFreeform ? "\n\nYou can also answer freely." : "";
             const commentHint = allowComment ? "\n\nAfter choosing an option, you may add an optional comment." : "";
             const contextText = normalizedContext ? `\n\nContext:\n${normalizedContext}` : "";
-            return {
-               content: [
-                  {
-                     type: "text",
-                     text: `Ask requires interactive mode. Please answer:\n\n${question}${contextText}${optionText}${freeformHint}${commentHint}`,
-                  },
-               ],
-               isError: true,
-               details: { question, context: normalizedContext, options, response: null, cancelled: true } as AskToolDetails,
-            };
+            throw new Error(
+               `Ask requires interactive mode. Please answer:\n\n${question}${contextText}${optionText}${freeformHint}${commentHint}`,
+            );
          }
 
          if (options.length === 0) {
@@ -2312,13 +2297,7 @@ export default function(pi: ExtensionAPI) {
                result = await askViaDialogs(ctx.ui, question, normalizedContext, options, allowMultiple, allowFreeform, allowComment, timeout);
             }
          } catch (error) {
-            const message =
-               error instanceof Error ? `${error.message}\n${error.stack ?? ""}` : String(error);
-            return {
-               content: [{ type: "text", text: `Ask tool failed: ${message}` }],
-               isError: true,
-               details: { error: message },
-            };
+            throw error instanceof Error ? error : new Error(String(error));
          } finally {
             removeOverlayInputListener?.();
             pi.events.emit("herdr:blocked", { active: false });
@@ -2363,11 +2342,17 @@ export default function(pi: ExtensionAPI) {
          return new Text(text, 0, 0);
       },
 
-      renderResult(result, options, theme) {
+      renderResult(result, options, theme, context) {
          const details = result.details as (AskToolDetails & { error?: string }) | undefined;
 
-         if (details?.error) {
-            return new Text(theme.fg("error", `✗ ${details.error}`), 0, 0);
+         if (details?.error || context?.isError) {
+            const message = details?.error ?? (
+               result.content
+                  ?.map((part) => part.type === "text" ? part.text : "")
+                  .join("\n")
+                  .trim() || "ask_user failed"
+            );
+            return new Text(theme.fg("error", `✗ ${message}`), 0, 0);
          }
 
          if (options.isPartial) {
