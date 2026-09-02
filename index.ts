@@ -43,17 +43,45 @@ const ASK_USER_VERSION: string = (_require("./package.json") as { version: strin
  * `anyOf`/`oneOf` shape that `Type.Union([Type.Literal()])` produces. Google's
  * function-calling API rejects the union form. Local copy of pi-ai's StringEnum
  * to avoid a peer dependency for one helper.
+ *
+ * Some hosts (oh-my-pi) alias `@sinclair/typebox` to a shim whose `Type.Unsafe`
+ * returns a plain object that `Type.Optional` cannot wrap (issue #38). On those
+ * hosts a union of literals is a real runtime schema *and* already collapses to
+ * the flat enum form, so we probe the builder and pick whichever path it
+ * supports. `builder` is injectable for tests only.
  */
-function StringEnum<const T extends readonly string[]>(
+export type StringEnumBuilder = Pick<typeof Type, "Unsafe" | "Optional" | "Union" | "Literal">;
+
+export function StringEnum<const T extends readonly string[]>(
    values: T,
    options?: { description?: string; default?: T[number] },
+   builder: StringEnumBuilder = Type,
 ): TUnsafe<T[number]> {
-   return Type.Unsafe<T[number]>({
-      type: "string",
-      enum: [...values],
+   const meta = {
       ...(options?.description ? { description: options.description } : {}),
       ...(options?.default !== undefined ? { default: options.default } : {}),
-   });
+   };
+   try {
+      builder.Optional(builder.Unsafe<string>({ type: "string" }));
+      return builder.Unsafe<T[number]>({ type: "string", enum: [...values], ...meta });
+   } catch {
+      // fall through to the union path below
+   }
+   // Shim path: the union is a runtime schema, so `Type.Optional` works and the
+   // enclosing `Type.Object` keeps every optional key optional. Chainable
+   // `.describe()`/`.default()` are the shim's way to attach metadata; the
+   // options argument covers builders that take it positionally instead.
+   let schema = builder.Union(values.map((value) => builder.Literal(value)), meta) as unknown as {
+      describe?: (text: string) => unknown;
+      default?: (value: unknown) => unknown;
+   };
+   if (options?.description && typeof schema.describe === "function") {
+      schema = schema.describe(options.description) as typeof schema;
+   }
+   if (options?.default !== undefined && typeof schema.default === "function") {
+      schema = schema.default(options.default) as typeof schema;
+   }
+   return schema as unknown as TUnsafe<T[number]>;
 }
 
 /**
