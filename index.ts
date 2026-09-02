@@ -2140,6 +2140,22 @@ export default function(pi: ExtensionAPI) {
          };
          const options = rawOptions.map(coerceOption).filter((option): option is QuestionOption => option !== null);
          const normalizedContext = context?.trim() || undefined;
+         // Every installed extension receives these events. By default only the
+         // question and the response kind are broadcast; the context and the
+         // user's actual selections/comment/freeform text stay inside the tool
+         // result unless the user opts in (#51).
+         const emitFullEvents = parseBooleanPreference(process.env.PI_ASK_USER_EMIT_FULL_EVENTS) ?? false;
+         const emitAnswered = (response: AskResponse): void => {
+            pi.events.emit(
+               "ask:answered",
+               emitFullEvents
+                  ? { question, context: normalizedContext, response }
+                  : { question, response: { kind: response.kind } },
+            );
+         };
+         const emitCancelled = (): void => {
+            pi.events.emit("ask:cancelled", emitFullEvents ? { question, context: normalizedContext, options } : { question });
+         };
 
          if (rawOptions.length > 0 && options.length === 0) {
             return {
@@ -2192,7 +2208,7 @@ export default function(pi: ExtensionAPI) {
                };
             }
 
-            pi.events.emit("ask:answered", { question, context: normalizedContext, response });
+            emitAnswered(response);
             return {
                content: [{ type: "text", text: `User answered: ${formatResponseSummary(response)}` }],
                details: { question, context: normalizedContext, options, response, cancelled: false } as AskToolDetails,
@@ -2292,18 +2308,14 @@ export default function(pi: ExtensionAPI) {
          }
 
          if (result === null) {
-            pi.events.emit("ask:cancelled", { question, context: normalizedContext, options });
+            emitCancelled();
             return {
                content: [{ type: "text", text: "User cancelled the question" }],
                details: { question, context: normalizedContext, options, response: null, cancelled: true } as AskToolDetails,
             };
          }
 
-         pi.events.emit("ask:answered", {
-            question,
-            context: normalizedContext,
-            response: result,
-         });
+         emitAnswered(result);
          return {
             content: [{ type: "text", text: `User answered: ${formatResponseSummary(result)}` }],
             details: {

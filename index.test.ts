@@ -348,6 +348,67 @@ describe("ask_user", () => {
       ]);
    });
 
+   describe("issue #51 event payload redaction", () => {
+      const answerFreeform = (tool: RegisteredTool) =>
+         tool.execute(
+            "tool-call-id",
+            { question: "Why?", context: "secret context", options: [] },
+            undefined,
+            undefined,
+            { hasUI: true, ui: { input: async () => "my private answer" } },
+         );
+      const cancelStructured = (tool: RegisteredTool) =>
+         tool.execute(
+            "tool-call-id",
+            { question: "Pick", context: "secret context", options: ["A", "B"] },
+            undefined,
+            undefined,
+            { hasUI: true, ui: { custom: async () => null } },
+         );
+
+      test("ask:answered carries only the question and response kind by default", async () => {
+         const tool = await setupTool();
+         const result = await answerFreeform(tool);
+
+         expect(result.details.response).toEqual({ kind: "freeform", text: "my private answer" });
+         expect(emittedEvents.filter((event) => event.name === "ask:answered")).toEqual([
+            { name: "ask:answered", payload: { question: "Why?", response: { kind: "freeform" } } },
+         ]);
+      });
+
+      test("ask:cancelled carries only the question by default", async () => {
+         const tool = await setupTool();
+         const result = await cancelStructured(tool);
+
+         expect(result.details.cancelled).toBe(true);
+         expect(emittedEvents.filter((event) => event.name === "ask:cancelled")).toEqual([
+            { name: "ask:cancelled", payload: { question: "Pick" } },
+         ]);
+      });
+
+      test("PI_ASK_USER_EMIT_FULL_EVENTS=true restores the full payloads", async () => {
+         stubEnv("PI_ASK_USER_EMIT_FULL_EVENTS", "true");
+         const tool = await setupTool();
+         await answerFreeform(tool);
+         await cancelStructured(tool);
+
+         expect(emittedEvents.filter((event) => event.name.startsWith("ask:"))).toEqual([
+            {
+               name: "ask:answered",
+               payload: { question: "Why?", context: "secret context", response: { kind: "freeform", text: "my private answer" } },
+            },
+            {
+               name: "ask:cancelled",
+               payload: {
+                  question: "Pick",
+                  context: "secret context",
+                  options: [{ title: "A" }, { title: "B" }],
+               },
+            },
+         ]);
+      });
+   });
+
    test("uses overlay mode by default", async () => {
       const tool = await setupTool();
       let capturedOptions: any;
@@ -1510,7 +1571,7 @@ describe("ask_user", () => {
       expect(result.isError).not.toBe(true);
       expect(result.details.response).toEqual({ kind: "freeform", text: "custom from editor" });
       expect(result.details.cancelled).toBe(false);
-      expect(answeredEvent?.payload.response).toEqual({ kind: "freeform", text: "custom from editor" });
+      expect(answeredEvent?.payload).toEqual({ question: "Which option should we use?", response: { kind: "freeform" } });
       expect(editorInputs).toEqual(["enter"]);
    });
 
