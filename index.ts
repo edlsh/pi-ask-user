@@ -16,6 +16,8 @@ import {
    Editor,
    type EditorTheme,
    fuzzyFilter,
+   isKeyRelease,
+   isKeyRepeat,
    Key,
    type Keybinding,
    type KeybindingsManager,
@@ -2219,6 +2221,12 @@ export default function(pi: ExtensionAPI) {
             ) {
                removeOverlayInputListener = ctx.ui.onTerminalInput((data) => {
                   if (!overlayToggle.matches(data) || !overlayHandle) return undefined;
+                  // Kitty's progressive keyboard protocol reports press, repeat,
+                  // and release as separate events. Toggle only on the initial
+                  // press; otherwise one physical keypress can immediately hide
+                  // and re-show the overlay. Still consume repeat/release events
+                  // so they do not reach the component focused behind it.
+                  if (isKeyRepeat(data) || isKeyRelease(data)) return { consume: true };
                   const nextHidden = !overlayHandle.isHidden();
                   overlayHandle.setHidden(nextHidden);
                   if (nextHidden && !hasAnnouncedHide) {

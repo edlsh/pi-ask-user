@@ -8,6 +8,10 @@
 - Configurable `auto` or always-single-column layouts for wide single-select prompts. Closes #30.
 - `herdr:blocked` lifecycle events while waiting for structured or freeform user input.
 
+### Fixed
+
+- The overlay visibility shortcut now ignores Kitty keyboard repeat and release events, preventing one `alt+o` keypress from hiding and immediately reopening the prompt.
+
 ## [0.13.1](https://github.com/edlsh/pi-ask-user/releases/tag/v0.13.1) - 2026-08-01
 
 ### Fixed
@@ -106,7 +110,6 @@
 - `ask_user` result details and emitted `ask:answered` events now use a structured `response` union instead of flattening everything into `answer` / `wasCustom`
 - Expanded result rendering now shows selection comments separately from chosen options
 
-
 ## [0.5.2](https://github.com/edlsh/pi-ask-user/releases/tag/v0.5.2) - 2026-04-06
 
 ### Fixed
@@ -136,7 +139,6 @@
 - Overlay freeform answers now preserve `wasCustom: true` in both emitted events and returned `details` metadata
 - Out-of-range number keys in searchable single-select now fall through to filtering instead of being silently swallowed
 - Exact-width word wrapping no longer duplicates preceding short text in wrapped descriptions
-
 
 ## [0.4.1](https://github.com/edlsh/pi-ask-user/releases/tag/v0.4.1) - 2026-03-22
 

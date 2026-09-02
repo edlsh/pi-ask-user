@@ -168,7 +168,10 @@ beforeAll(() => {
             return super.render().map((line) => this.mdTheme.bold(line));
          }
       },
-      matchesKey: (data: string, key: string) => data === key,
+      matchesKey: (data: string, key: string) => data === key
+         || (key === "alt+o" && /^\x1b\[111;3:[123]u$/.test(data)),
+      isKeyRepeat: (data: string) => data.includes(":2u"),
+      isKeyRelease: (data: string) => data.includes(":3u"),
       Spacer: class {
          render() {
             return [""];
@@ -669,10 +672,16 @@ describe("ask_user", () => {
                ui: {
                   custom: async (_factory: any, options: any) => {
                      options.onHandle?.(handle);
-                     // Simulate the user pressing alt+o twice while the overlay is shown.
-                     const firstResult = inputHandler?.("alt+o");
-                     const secondResult = inputHandler?.("alt+o");
+                     // Kitty progressive keyboard reporting emits repeat and
+                     // release events in addition to the initial press. They
+                     // must be consumed without toggling the overlay again.
+                     const firstResult = inputHandler?.("\x1b[111;3:1u");
+                     const repeatResult = inputHandler?.("\x1b[111;3:2u");
+                     const releaseResult = inputHandler?.("\x1b[111;3:3u");
+                     const secondResult = inputHandler?.("\x1b[111;3:1u");
                      expect(firstResult).toEqual({ consume: true });
+                     expect(repeatResult).toEqual({ consume: true });
+                     expect(releaseResult).toEqual({ consume: true });
                      expect(secondResult).toEqual({ consume: true });
                      return null;
                   },
