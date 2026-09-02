@@ -1,22 +1,27 @@
 # Changelog
 
-## Unreleased
+## [0.15.0](https://github.com/edlsh/pi-ask-user/releases/tag/v0.15.0) - 2026-09-02
 
 ### Added
 
-- Responsive context collapse for overlay and inline prompts; oversized context preserves the full value while keeping the question and choices visible, and `ctrl+e` toggles the expanded view.
-- Configurable `auto` or always-single-column layouts for wide single-select prompts. Closes #30.
-- `herdr:blocked` lifecycle events while waiting for structured or freeform user input.
-- `contextExpanded` parameter and `PI_ASK_USER_CONTEXT_EXPANDED` preference for opening oversized context expanded by default; per-call value wins, `ctrl+e` still toggles. Closes #45.
+- `contextExpanded` parameter and `PI_ASK_USER_CONTEXT_EXPANDED` preference for opening oversized context expanded by default; per-call value wins, `ctrl+e` still toggles. Closes #45. (#57)
 
 ### Changed
 
-- `ask:answered` and `ask:cancelled` events are redacted by default: they now carry only the question and the response `kind`, since every installed extension receives them. Set `PI_ASK_USER_EMIT_FULL_EVENTS=true` to restore the previous payloads with `context`, `options`, and the full `response`. The tool result's `details` is unchanged. Closes #51.
+- `ask:answered` and `ask:cancelled` events are redacted by default: they now carry only the question and the response `kind`, since every installed extension receives them. Set `PI_ASK_USER_EMIT_FULL_EVENTS=true` to restore the previous payloads with `context`, `options`, and the full `response`. The tool result's `details` is unchanged. Closes #51. (#56)
 
 ### Fixed
 
-- The overlay visibility shortcut now ignores Kitty keyboard repeat and release events, preventing one `alt+o` keypress from hiding and immediately reopening the prompt.
-- `ask_user` failing to register on oh-my-pi 17.2.x, whose TypeBox shim returned a plain object from `Type.Unsafe` that `Type.Optional` could not wrap (`asRuntime(schema).or is not a function`). `StringEnum` now probes the host builder and falls back to a literal union — which those hosts already collapse to the flat `{ type: "string", enum }` form — while real TypeBox keeps the flat enum Google's function-calling API requires. Closes #38.
+- The overlay visibility shortcut now ignores Kitty keyboard repeat and release events, preventing one `alt+o` keypress from hiding and immediately reopening the prompt. Closes #46. (#40)
+- `ask_user` failing to register on oh-my-pi 17.2.x, whose TypeBox shim returned a plain object from `Type.Unsafe` that `Type.Optional` could not wrap (`asRuntime(schema).or is not a function`). `StringEnum` now probes the host builder and falls back to a literal union — which those hosts already collapse to the flat `{ type: "string", enum }` form — while real TypeBox keeps the flat enum Google's function-calling API requires. Closes #38. (#55)
+
+## [0.14.0](https://github.com/edlsh/pi-ask-user/releases/tag/v0.14.0) - 2026-08-03
+
+### Added
+
+- Responsive context collapse for overlay and inline prompts; oversized context preserves the full value while keeping the question and choices visible, and `ctrl+e` toggles the expanded view. (#37)
+- Configurable `auto` or always-single-column layouts for wide single-select prompts. Closes #30. (#37)
+- `herdr:blocked` lifecycle events while waiting for structured or freeform user input. (#37)
 
 ## [0.13.1](https://github.com/edlsh/pi-ask-user/releases/tag/v0.13.1) - 2026-08-01
 
