@@ -128,6 +128,7 @@ interface AskParams {
    allowComment?: boolean;
    displayMode?: AskDisplayMode;
    singleSelectLayout?: AskSingleSelectLayout;
+   contextExpanded?: boolean;
    overlayToggleKey?: string | null;
    commentToggleKey?: string | null;
    timeout?: number;
@@ -1120,6 +1121,7 @@ class AskComponent extends Container {
    private allowComment: boolean;
    private displayMode: AskDisplayMode;
    private singleSelectLayout: AskSingleSelectLayout;
+   private preferExpandedContext: boolean;
    private tui: TUI;
    private theme: Theme;
    private keybindings: KeybindingsManager;
@@ -1169,6 +1171,7 @@ class AskComponent extends Container {
       allowComment: boolean,
       displayMode: AskDisplayMode,
       singleSelectLayout: AskSingleSelectLayout,
+      contextExpanded: boolean,
       tui: TUI,
       theme: Theme,
       keybindings: KeybindingsManager,
@@ -1185,6 +1188,7 @@ class AskComponent extends Container {
       this.allowComment = allowComment;
       this.displayMode = displayMode;
       this.singleSelectLayout = singleSelectLayout;
+      this.preferExpandedContext = contextExpanded;
       this.tui = tui;
       this.theme = theme;
       this.keybindings = keybindings;
@@ -1370,7 +1374,10 @@ class AskComponent extends Container {
    private setContextIsCollapsible(value: boolean): void {
       if (this.contextIsCollapsible === value) return;
       this.contextIsCollapsible = value;
-      if (!value) this.contextExpanded = false;
+      // Whenever context becomes collapsible (first render, or a resize that
+      // shrinks the viewport) start in the user's preferred state; ctrl+e still
+      // toggles from there.
+      this.contextExpanded = value && this.preferExpandedContext;
       this.updateHelpText();
    }
 
@@ -2078,6 +2085,11 @@ export default function(pi: ExtensionAPI) {
                description: "Single-select layout. 'auto' uses a details pane on wide terminals; 'list' always keeps descriptions below options. Default: PI_ASK_USER_SINGLE_SELECT_LAYOUT if set, otherwise 'auto'.",
             }),
          ),
+         contextExpanded: Type.Optional(
+            Type.Boolean({
+               description: "Start with oversized context expanded instead of collapsed behind a one-line summary. Default: PI_ASK_USER_CONTEXT_EXPANDED env var if set, otherwise false.",
+            }),
+         ),
          overlayToggleKey: Type.Optional(
             Type.String({
                description:
@@ -2112,6 +2124,7 @@ export default function(pi: ExtensionAPI) {
             allowComment: requestedAllowComment,
             displayMode,
             singleSelectLayout,
+            contextExpanded: requestedContextExpanded,
             overlayToggleKey,
             commentToggleKey,
             timeout,
@@ -2125,6 +2138,9 @@ export default function(pi: ExtensionAPI) {
             ?? (envSingleSelectLayout === "list" ? "list" : "auto");
          const allowComment = requestedAllowComment
             ?? parseBooleanPreference(process.env.PI_ASK_USER_ALLOW_COMMENT)
+            ?? false;
+         const contextExpanded = requestedContextExpanded
+            ?? parseBooleanPreference(process.env.PI_ASK_USER_CONTEXT_EXPANDED)
             ?? false;
          const shortcuts: ResolvedAskShortcuts = {
             overlayToggle: resolveShortcut(
@@ -2245,6 +2261,7 @@ export default function(pi: ExtensionAPI) {
                   allowComment,
                   effectiveDisplayMode,
                   effectiveSingleSelectLayout,
+                  contextExpanded,
                   tui,
                   theme,
                   keybindings,

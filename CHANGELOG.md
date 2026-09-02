@@ -7,6 +7,7 @@
 - Responsive context collapse for overlay and inline prompts; oversized context preserves the full value while keeping the question and choices visible, and `ctrl+e` toggles the expanded view.
 - Configurable `auto` or always-single-column layouts for wide single-select prompts. Closes #30.
 - `herdr:blocked` lifecycle events while waiting for structured or freeform user input.
+- `contextExpanded` parameter and `PI_ASK_USER_CONTEXT_EXPANDED` preference for opening oversized context expanded by default; per-call value wins, `ctrl+e` still toggles. Closes #45.
 
 ### Changed
 
