@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Forward tool cancellation to freeform input and RPC dialog fallbacks so aborting `ask_user` dismisses every prompt path consistently.
+
 ## [0.15.0](https://github.com/edlsh/pi-ask-user/releases/tag/v0.15.0) - 2026-09-02
 
 ### Added
