@@ -16,6 +16,8 @@ import {
    Editor,
    type EditorTheme,
    fuzzyFilter,
+   isKeyRelease,
+   isKeyRepeat,
    Key,
    type Keybinding,
    type KeybindingsManager,
@@ -41,17 +43,45 @@ const ASK_USER_VERSION: string = (_require("./package.json") as { version: strin
  * `anyOf`/`oneOf` shape that `Type.Union([Type.Literal()])` produces. Google's
  * function-calling API rejects the union form. Local copy of pi-ai's StringEnum
  * to avoid a peer dependency for one helper.
+ *
+ * Some hosts (oh-my-pi) alias `@sinclair/typebox` to a shim whose `Type.Unsafe`
+ * returns a plain object that `Type.Optional` cannot wrap (issue #38). On those
+ * hosts a union of literals is a real runtime schema *and* already collapses to
+ * the flat enum form, so we probe the builder and pick whichever path it
+ * supports. `builder` is injectable for tests only.
  */
-function StringEnum<const T extends readonly string[]>(
+export type StringEnumBuilder = Pick<typeof Type, "Unsafe" | "Optional" | "Union" | "Literal">;
+
+export function StringEnum<const T extends readonly string[]>(
    values: T,
    options?: { description?: string; default?: T[number] },
+   builder: StringEnumBuilder = Type,
 ): TUnsafe<T[number]> {
-   return Type.Unsafe<T[number]>({
-      type: "string",
-      enum: [...values],
+   const meta = {
       ...(options?.description ? { description: options.description } : {}),
       ...(options?.default !== undefined ? { default: options.default } : {}),
-   });
+   };
+   try {
+      builder.Optional(builder.Unsafe<string>({ type: "string" }));
+      return builder.Unsafe<T[number]>({ type: "string", enum: [...values], ...meta });
+   } catch {
+      // fall through to the union path below
+   }
+   // Shim path: the union is a runtime schema, so `Type.Optional` works and the
+   // enclosing `Type.Object` keeps every optional key optional. Chainable
+   // `.describe()`/`.default()` are the shim's way to attach metadata; the
+   // options argument covers builders that take it positionally instead.
+   let schema = builder.Union(values.map((value) => builder.Literal(value)), meta) as unknown as {
+      describe?: (text: string) => unknown;
+      default?: (value: unknown) => unknown;
+   };
+   if (options?.description && typeof schema.describe === "function") {
+      schema = schema.describe(options.description) as typeof schema;
+   }
+   if (options?.default !== undefined && typeof schema.default === "function") {
+      schema = schema.default(options.default) as typeof schema;
+   }
+   return schema as unknown as TUnsafe<T[number]>;
 }
 
 /**
@@ -98,6 +128,7 @@ interface AskParams {
    allowComment?: boolean;
    displayMode?: AskDisplayMode;
    singleSelectLayout?: AskSingleSelectLayout;
+   contextExpanded?: boolean;
    overlayToggleKey?: string | null;
    commentToggleKey?: string | null;
    timeout?: number;
@@ -1090,6 +1121,7 @@ class AskComponent extends Container {
    private allowComment: boolean;
    private displayMode: AskDisplayMode;
    private singleSelectLayout: AskSingleSelectLayout;
+   private preferExpandedContext: boolean;
    private tui: TUI;
    private theme: Theme;
    private keybindings: KeybindingsManager;
@@ -1139,6 +1171,7 @@ class AskComponent extends Container {
       allowComment: boolean,
       displayMode: AskDisplayMode,
       singleSelectLayout: AskSingleSelectLayout,
+      contextExpanded: boolean,
       tui: TUI,
       theme: Theme,
       keybindings: KeybindingsManager,
@@ -1155,6 +1188,7 @@ class AskComponent extends Container {
       this.allowComment = allowComment;
       this.displayMode = displayMode;
       this.singleSelectLayout = singleSelectLayout;
+      this.preferExpandedContext = contextExpanded;
       this.tui = tui;
       this.theme = theme;
       this.keybindings = keybindings;
@@ -1340,7 +1374,10 @@ class AskComponent extends Container {
    private setContextIsCollapsible(value: boolean): void {
       if (this.contextIsCollapsible === value) return;
       this.contextIsCollapsible = value;
-      if (!value) this.contextExpanded = false;
+      // Whenever context becomes collapsible (first render, or a resize that
+      // shrinks the viewport) start in the user's preferred state; ctrl+e still
+      // toggles from there.
+      this.contextExpanded = value && this.preferExpandedContext;
       this.updateHelpText();
    }
 
@@ -2047,6 +2084,11 @@ export default function(pi: ExtensionAPI) {
                description: "Single-select layout. 'auto' uses a details pane on wide terminals; 'list' always keeps descriptions below options. Default: PI_ASK_USER_SINGLE_SELECT_LAYOUT if set, otherwise 'auto'.",
             }),
          ),
+         contextExpanded: Type.Optional(
+            Type.Boolean({
+               description: "Start with oversized context expanded instead of collapsed behind a one-line summary. Default: PI_ASK_USER_CONTEXT_EXPANDED env var if set, otherwise false.",
+            }),
+         ),
          overlayToggleKey: Type.Optional(
             Type.String({
                description:
@@ -2081,6 +2123,7 @@ export default function(pi: ExtensionAPI) {
             allowComment: requestedAllowComment,
             displayMode,
             singleSelectLayout,
+            contextExpanded: requestedContextExpanded,
             overlayToggleKey,
             commentToggleKey,
             timeout,
@@ -2094,6 +2137,9 @@ export default function(pi: ExtensionAPI) {
             ?? (envSingleSelectLayout === "list" ? "list" : "auto");
          const allowComment = requestedAllowComment
             ?? parseBooleanPreference(process.env.PI_ASK_USER_ALLOW_COMMENT)
+            ?? false;
+         const contextExpanded = requestedContextExpanded
+            ?? parseBooleanPreference(process.env.PI_ASK_USER_CONTEXT_EXPANDED)
             ?? false;
          const shortcuts: ResolvedAskShortcuts = {
             overlayToggle: resolveShortcut(
@@ -2112,6 +2158,22 @@ export default function(pi: ExtensionAPI) {
          const dialogOpts = signal
             ? (timeout ? { signal, timeout } : { signal })
             : (timeout ? { timeout } : undefined);
+         // Every installed extension receives these events. By default only the
+         // question and the response kind are broadcast; the context and the
+         // user's actual selections/comment/freeform text stay inside the tool
+         // result unless the user opts in (#51).
+         const emitFullEvents = parseBooleanPreference(process.env.PI_ASK_USER_EMIT_FULL_EVENTS) ?? false;
+         const emitAnswered = (response: AskResponse): void => {
+            pi.events.emit(
+               "ask:answered",
+               emitFullEvents
+                  ? { question, context: normalizedContext, response }
+                  : { question, response: { kind: response.kind } },
+            );
+         };
+         const emitCancelled = (): void => {
+            pi.events.emit("ask:cancelled", emitFullEvents ? { question, context: normalizedContext, options } : { question });
+         };
 
          if (rawOptions.length > 0 && options.length === 0) {
             return {
@@ -2164,7 +2226,7 @@ export default function(pi: ExtensionAPI) {
                };
             }
 
-            pi.events.emit("ask:answered", { question, context: normalizedContext, response });
+            emitAnswered(response);
             return {
                content: [{ type: "text", text: `User answered: ${formatResponseSummary(response)}` }],
                details: { question, context: normalizedContext, options, response, cancelled: false } as AskToolDetails,
@@ -2201,6 +2263,7 @@ export default function(pi: ExtensionAPI) {
                   allowComment,
                   effectiveDisplayMode,
                   effectiveSingleSelectLayout,
+                  contextExpanded,
                   tui,
                   theme,
                   keybindings,
@@ -2221,6 +2284,12 @@ export default function(pi: ExtensionAPI) {
             ) {
                removeOverlayInputListener = ctx.ui.onTerminalInput((data) => {
                   if (!overlayToggle.matches(data) || !overlayHandle) return undefined;
+                  // Kitty's progressive keyboard protocol reports press, repeat,
+                  // and release as separate events. Toggle only on the initial
+                  // press; otherwise one physical keypress can immediately hide
+                  // and re-show the overlay. Still consume repeat/release events
+                  // so they do not reach the component focused behind it.
+                  if (isKeyRepeat(data) || isKeyRelease(data)) return { consume: true };
                   const nextHidden = !overlayHandle.isHidden();
                   overlayHandle.setHidden(nextHidden);
                   if (nextHidden && !hasAnnouncedHide) {
@@ -2267,18 +2336,14 @@ export default function(pi: ExtensionAPI) {
          }
 
          if (result === null) {
-            pi.events.emit("ask:cancelled", { question, context: normalizedContext, options });
+            emitCancelled();
             return {
                content: [{ type: "text", text: "User cancelled the question" }],
                details: { question, context: normalizedContext, options, response: null, cancelled: true } as AskToolDetails,
             };
          }
 
-         pi.events.emit("ask:answered", {
-            question,
-            context: normalizedContext,
-            response: result,
-         });
+         emitAnswered(result);
          return {
             content: [{ type: "text", text: `User answered: ${formatResponseSummary(result)}` }],
             details: {

@@ -102,6 +102,8 @@ export PI_ASK_USER_SINGLE_SELECT_LAYOUT=list
 export PI_ASK_USER_ALLOW_COMMENT=true
 export PI_ASK_USER_OVERLAY_TOGGLE_KEY=alt+h
 export PI_ASK_USER_COMMENT_TOGGLE_KEY=alt+c
+export PI_ASK_USER_EMIT_FULL_EVENTS=true
+export PI_ASK_USER_CONTEXT_EXPANDED=true
 ```
 
 Environment variables must be present in the process that launches Pi. If Pi is launched from a desktop app or a different shell, changes in `~/.zshrc` may not be inherited; launch Pi from a terminal where `echo $PI_ASK_USER_DISPLAY_MODE` shows the expected value.
@@ -134,6 +136,16 @@ Effective order:
 2. `PI_ASK_USER_ALLOW_COMMENT` (`true`, `1`, `yes`, or `on`; corresponding false values are also accepted)
 3. Fallback default: `false`
 
+### Context expansion
+
+Oversized context collapses behind a one-line summary so the question and choices stay visible. To start expanded instead:
+
+1. Per-call `contextExpanded` parameter (if provided)
+2. `PI_ASK_USER_CONTEXT_EXPANDED` (`true`, `1`, `yes`, or `on`; corresponding false values are also accepted)
+3. Fallback default: `false`
+
+`ctrl+e` still toggles from whichever state the prompt opened in.
+
 ### Shortcuts
 
 Effective order for both `overlayToggleKey` and `commentToggleKey`:
@@ -163,9 +175,20 @@ If you prefer never to see the overlay, set `displayMode: "inline"` per call or 
 
 If context wraps beyond the available decision area, `ask_user` collapses it into a one-line summary so the question and at least one choice remain visible. Press the context key shown in the prompt (`ctrl+e` by default) to expand or collapse the complete context; expanded context remains bounded and scrollable with the existing prompt-scroll keys in both display modes.
 
-### Waiting lifecycle event
+### Events
 
 While an interactive prompt is open, the extension emits `herdr:blocked` with `{ active: true, label: "Waiting for user response" }`. It emits `{ active: false }` in `finally`, including cancellation and error paths. Hosts without a listener are unaffected.
+
+When the prompt resolves it emits `ask:answered` or `ask:cancelled`. Every installed extension receives these, so by default they carry only what is needed to correlate the prompt with its outcome:
+
+```typescript
+// ask:answered
+{ question: string; response: { kind: "selection" | "freeform" } }
+// ask:cancelled
+{ question: string }
+```
+
+Set `PI_ASK_USER_EMIT_FULL_EVENTS=true` (or `1`, `yes`, `on`) to restore the full payloads — `context`, the offered `options` on cancel, and the complete `response` including selections, comment, and freeform text. Leave it unset unless another extension you trust needs the answer itself; the full response is always available to the agent through the tool result's `details`.
 
 ## Known limitations
 

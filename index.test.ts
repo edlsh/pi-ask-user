@@ -1,4 +1,5 @@
 import { beforeAll, describe, expect, mock, onTestFinished, test } from "bun:test";
+import type { StringEnumBuilder } from "./index";
 
 let editorInputs: string[] = [];
 let editorText = "";
@@ -168,7 +169,10 @@ beforeAll(() => {
             return super.render().map((line) => this.mdTheme.bold(line));
          }
       },
-      matchesKey: (data: string, key: string) => data === key,
+      matchesKey: (data: string, key: string) => data === key
+         || (key === "alt+o" && /^\x1b\[111;3:[123]u$/.test(data)),
+      isKeyRepeat: (data: string) => data.includes(":2u"),
+      isKeyRelease: (data: string) => data.includes(":3u"),
       Spacer: class {
          render() {
             return [""];
@@ -372,6 +376,67 @@ describe("ask_user", () => {
 
       expect(capturedOpts).toEqual({ signal: controller.signal });
       expect(result.details.cancelled).toBe(true);
+   });
+
+   describe("issue #51 event payload redaction", () => {
+      const answerFreeform = (tool: RegisteredTool) =>
+         tool.execute(
+            "tool-call-id",
+            { question: "Why?", context: "secret context", options: [] },
+            undefined,
+            undefined,
+            { hasUI: true, ui: { input: async () => "my private answer" } },
+         );
+      const cancelStructured = (tool: RegisteredTool) =>
+         tool.execute(
+            "tool-call-id",
+            { question: "Pick", context: "secret context", options: ["A", "B"] },
+            undefined,
+            undefined,
+            { hasUI: true, ui: { custom: async () => null } },
+         );
+
+      test("ask:answered carries only the question and response kind by default", async () => {
+         const tool = await setupTool();
+         const result = await answerFreeform(tool);
+
+         expect(result.details.response).toEqual({ kind: "freeform", text: "my private answer" });
+         expect(emittedEvents.filter((event) => event.name === "ask:answered")).toEqual([
+            { name: "ask:answered", payload: { question: "Why?", response: { kind: "freeform" } } },
+         ]);
+      });
+
+      test("ask:cancelled carries only the question by default", async () => {
+         const tool = await setupTool();
+         const result = await cancelStructured(tool);
+
+         expect(result.details.cancelled).toBe(true);
+         expect(emittedEvents.filter((event) => event.name === "ask:cancelled")).toEqual([
+            { name: "ask:cancelled", payload: { question: "Pick" } },
+         ]);
+      });
+
+      test("PI_ASK_USER_EMIT_FULL_EVENTS=true restores the full payloads", async () => {
+         stubEnv("PI_ASK_USER_EMIT_FULL_EVENTS", "true");
+         const tool = await setupTool();
+         await answerFreeform(tool);
+         await cancelStructured(tool);
+
+         expect(emittedEvents.filter((event) => event.name.startsWith("ask:"))).toEqual([
+            {
+               name: "ask:answered",
+               payload: { question: "Why?", context: "secret context", response: { kind: "freeform", text: "my private answer" } },
+            },
+            {
+               name: "ask:cancelled",
+               payload: {
+                  question: "Pick",
+                  context: "secret context",
+                  options: [{ title: "A" }, { title: "B" }],
+               },
+            },
+         ]);
+      });
    });
 
    test("uses overlay mode by default", async () => {
@@ -699,10 +764,16 @@ describe("ask_user", () => {
                ui: {
                   custom: async (_factory: any, options: any) => {
                      options.onHandle?.(handle);
-                     // Simulate the user pressing alt+o twice while the overlay is shown.
-                     const firstResult = inputHandler?.("alt+o");
-                     const secondResult = inputHandler?.("alt+o");
+                     // Kitty progressive keyboard reporting emits repeat and
+                     // release events in addition to the initial press. They
+                     // must be consumed without toggling the overlay again.
+                     const firstResult = inputHandler?.("\x1b[111;3:1u");
+                     const repeatResult = inputHandler?.("\x1b[111;3:2u");
+                     const releaseResult = inputHandler?.("\x1b[111;3:3u");
+                     const secondResult = inputHandler?.("\x1b[111;3:1u");
                      expect(firstResult).toEqual({ consume: true });
+                     expect(repeatResult).toEqual({ consume: true });
+                     expect(releaseResult).toEqual({ consume: true });
                      expect(secondResult).toEqual({ consume: true });
                      return null;
                   },
@@ -1530,7 +1601,7 @@ describe("ask_user", () => {
       expect(result.isError).not.toBe(true);
       expect(result.details.response).toEqual({ kind: "freeform", text: "custom from editor" });
       expect(result.details.cancelled).toBe(false);
-      expect(answeredEvent?.payload.response).toEqual({ kind: "freeform", text: "custom from editor" });
+      expect(answeredEvent?.payload).toEqual({ question: "Which option should we use?", response: { kind: "freeform" } });
       expect(editorInputs).toEqual(["enter"]);
    });
 
@@ -1839,6 +1910,63 @@ describe("ask_user", () => {
       expect(recollapsed).not.toContain("Context detail.");
       expect(result.details.response).toEqual({ kind: "selection", selections: ["Beta"] });
       expect(result.details.context).toContain("Context detail.");
+   });
+
+   describe("issue #45 contextExpanded preference", () => {
+      const renderFirstFrame = async (tool: RegisteredTool, params: Record<string, unknown>) => {
+         let firstFrame = "";
+         await tool.execute(
+            "tool-call-id",
+            {
+               question: "Which option should we use?",
+               context: "Context detail. ".repeat(80),
+               options: ["Alpha", "Beta"],
+               ...params,
+            },
+            undefined,
+            undefined,
+            {
+               hasUI: true,
+               ui: {
+                  custom: async (factory: any) => {
+                     const component = factory(
+                        { requestRender() { }, terminal: { rows: 40 } },
+                        createTheme(),
+                        createKeybindings(),
+                        () => { },
+                     );
+                     firstFrame = component.render(50).join("\n");
+                     return null;
+                  },
+               },
+            },
+         );
+         return firstFrame;
+      };
+
+      test("per-call contextExpanded: true opens oversized context expanded", async () => {
+         const tool = await setupTool();
+         const frame = await renderFirstFrame(tool, { contextExpanded: true });
+         expect(frame).toContain("Context detail.");
+         expect(frame).not.toContain("Context (");
+         expect(frame).toContain("ctrl+e collapse context");
+      });
+
+      test("uses PI_ASK_USER_CONTEXT_EXPANDED when the call omits contextExpanded", async () => {
+         stubEnv("PI_ASK_USER_CONTEXT_EXPANDED", "true");
+         const tool = await setupTool();
+         const frame = await renderFirstFrame(tool, {});
+         expect(frame).toContain("Context detail.");
+         expect(frame).not.toContain("Context (");
+      });
+
+      test("per-call contextExpanded: false overrides PI_ASK_USER_CONTEXT_EXPANDED", async () => {
+         stubEnv("PI_ASK_USER_CONTEXT_EXPANDED", "true");
+         const tool = await setupTool();
+         const frame = await renderFirstFrame(tool, { contextExpanded: false });
+         expect(frame).toContain("Context (");
+         expect(frame).not.toContain("Context detail.");
+      });
    });
 
    test("scrolls constrained multi-select overlays to the comment and freeform rows", async () => {
@@ -2751,6 +2879,65 @@ describe("ask_user", () => {
          expect(optionSchema).not.toContain("Type.Union");
          expect(optionSchema).not.toContain("anyOf");
          expect(optionSchema).not.toContain("oneOf");
+      });
+   });
+
+   describe("issue #38 typebox shim compatibility", () => {
+      // Fakes stand in for the real builders; their signatures are narrower than
+      // TypeBox's generics, so the cast is the only way to hand them to StringEnum.
+      const realTypeBoxLike = {
+         Unsafe: (schema: Record<string, unknown>) => ({ ...schema }),
+         Optional: (schema: unknown) => schema,
+         Union: () => {
+            throw new Error("union path must not run on real TypeBox");
+         },
+         Literal: (value: unknown) => value,
+      } as unknown as StringEnumBuilder;
+
+      type RuntimeSchema = {
+         runtime: true;
+         members: unknown[];
+         meta: Record<string, unknown>;
+         or: () => RuntimeSchema;
+         describe: (text: string) => RuntimeSchema;
+         default: (value: unknown) => RuntimeSchema;
+      };
+      const runtimeSchema = (members: unknown[], meta: Record<string, unknown> = {}): RuntimeSchema => ({
+         runtime: true,
+         members,
+         meta,
+         or: () => runtimeSchema(members, meta),
+         describe: (text) => runtimeSchema(members, { ...meta, description: text }),
+         default: (value) => runtimeSchema(members, { ...meta, default: value }),
+      });
+      const isRuntimeSchema = (value: unknown): value is RuntimeSchema =>
+         typeof value === "object" && value !== null && "or" in value && typeof value.or === "function";
+      // Mirrors oh-my-pi's legacy-typebox shim: Unsafe yields a plain object,
+      // Optional evaluates `asRuntime(schema).or(...)`, Union ignores options.
+      const ompOptional = (schema: unknown) => {
+         if (!isRuntimeSchema(schema)) throw new TypeError("asRuntime(schema).or is not a function");
+         return schema.or();
+      };
+      const ompLike = {
+         Unsafe: (schema: Record<string, unknown>) => ({ ...schema }),
+         Optional: ompOptional,
+         Union: (members: unknown[]) => runtimeSchema(members),
+         Literal: (value: unknown) => ({ literal: value }),
+      } as unknown as StringEnumBuilder;
+
+      test("emits the flat enum on hosts whose Type.Optional accepts Type.Unsafe", async () => {
+         const { StringEnum } = await import("./index");
+         const schema: unknown = StringEnum(["overlay", "inline"] as const, { description: "mode", default: "overlay" }, realTypeBoxLike);
+         expect(schema).toEqual({ type: "string", enum: ["overlay", "inline"], description: "mode", default: "overlay" });
+      });
+
+      test("falls back to a literal union that Type.Optional can wrap on omp-style shims", async () => {
+         const { StringEnum } = await import("./index");
+         const schema: unknown = StringEnum(["overlay", "inline"] as const, { description: "mode" }, ompLike);
+         if (!isRuntimeSchema(schema)) throw new Error("expected a runtime union schema");
+         expect(schema.members).toEqual([{ literal: "overlay" }, { literal: "inline" }]);
+         expect(schema.meta).toEqual({ description: "mode" });
+         expect(() => ompOptional(schema)).not.toThrow();
       });
    });
 
