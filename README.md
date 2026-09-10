@@ -177,7 +177,7 @@ If context wraps beyond the available decision area, `ask_user` collapses it int
 
 ### Events
 
-While an interactive prompt is open, the extension emits `herdr:blocked` with `{ active: true, label: "Waiting for user response" }`. It emits `{ active: false }` in `finally`, including cancellation and error paths. Hosts without a listener are unaffected.
+While an interactive prompt is open, the extension emits `herdr:blocked` with `{ active: true, label: "Waiting for user response", question }`. It emits `{ active: false }` in `finally`, including cancellation and error paths. The question is included so host integrations (for example, Orca) can show a useful notification when the host window is unfocused. Hosts without a listener are unaffected.
 
 When the prompt resolves it emits `ask:answered` or `ask:cancelled`. Every installed extension receives these, so by default they carry only what is needed to correlate the prompt with its outcome:
 

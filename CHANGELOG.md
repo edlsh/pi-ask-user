@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- `herdr:blocked` active events now include the question text, allowing host integrations such as Orca to show a useful notification when the agent's window is unfocused.
+
 ## [0.15.0](https://github.com/edlsh/pi-ask-user/releases/tag/v0.15.0) - 2026-09-02
 
 ### Added

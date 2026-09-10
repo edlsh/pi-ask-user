@@ -290,7 +290,7 @@ describe("ask_user", () => {
       );
 
       expect(emittedEvents.filter((event) => event.name === "herdr:blocked")).toEqual([
-         { name: "herdr:blocked", payload: { active: true, label: "Waiting for user response" } },
+         { name: "herdr:blocked", payload: { active: true, label: "Waiting for user response", question: "Continue?" } },
          { name: "herdr:blocked", payload: { active: false } },
       ]);
    });
@@ -307,7 +307,7 @@ describe("ask_user", () => {
       );
 
       expect(emittedEvents.filter((event) => event.name === "herdr:blocked")).toEqual([
-         { name: "herdr:blocked", payload: { active: true, label: "Waiting for user response" } },
+         { name: "herdr:blocked", payload: { active: true, label: "Waiting for user response", question: "Why?" } },
          { name: "herdr:blocked", payload: { active: false } },
       ]);
    });
@@ -325,7 +325,7 @@ describe("ask_user", () => {
 
       expect(result.isError).toBe(true);
       expect(emittedEvents.filter((event) => event.name === "herdr:blocked")).toEqual([
-         { name: "herdr:blocked", payload: { active: true, label: "Waiting for user response" } },
+         { name: "herdr:blocked", payload: { active: true, label: "Waiting for user response", question: "Continue?" } },
          { name: "herdr:blocked", payload: { active: false } },
       ]);
    });
@@ -343,7 +343,7 @@ describe("ask_user", () => {
 
       expect(result.details.cancelled).toBe(true);
       expect(emittedEvents.filter((event) => event.name === "herdr:blocked")).toEqual([
-         { name: "herdr:blocked", payload: { active: true, label: "Waiting for user response" } },
+         { name: "herdr:blocked", payload: { active: true, label: "Waiting for user response", question: "Why?" } },
          { name: "herdr:blocked", payload: { active: false } },
       ]);
    });
