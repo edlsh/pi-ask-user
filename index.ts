@@ -2208,7 +2208,7 @@ export default function(pi: ExtensionAPI) {
 
          if (options.length === 0) {
             const prompt = normalizedContext ? `${question}\n\nContext:\n${normalizedContext}` : question;
-            pi.events.emit("herdr:blocked", { active: true, label: "Waiting for user response" });
+            pi.events.emit("herdr:blocked", { active: true, label: "Waiting for user response", question });
             let answer: string | undefined;
             try {
                answer = await ctx.ui.input(prompt, "Type your answer...", timeout ? { timeout } : undefined);
@@ -2240,7 +2240,7 @@ export default function(pi: ExtensionAPI) {
          let overlayHandle: OverlayHandle | undefined;
          let removeOverlayInputListener: (() => void) | undefined;
          let hasAnnouncedHide = false;
-         pi.events.emit("herdr:blocked", { active: true, label: "Waiting for user response" });
+         pi.events.emit("herdr:blocked", { active: true, label: "Waiting for user response", question });
          try {
             const customFactory = (tui: TUI, theme: Theme, keybindings: KeybindingsManager, done: (result: AskUIResult | null) => void) => {
                if (signal) {
