@@ -1791,6 +1791,44 @@ describe("ask_user", () => {
       expect(rendered).toContain("The alpha option keeps the rollout conservative.");
    });
 
+   test("expands the option viewport into unused prompt space on tall terminals", async () => {
+      const tool = await setupTool();
+      let rendered: string[] = [];
+
+      const result = await tool.execute(
+         "tool-call-id",
+         {
+            question: "Which option should we use?",
+            options: Array.from({ length: 15 }, (_, index) => `Option ${index + 1}`),
+            allowFreeform: false,
+         },
+         undefined,
+         undefined,
+         {
+            hasUI: true,
+            ui: {
+               custom: async (factory: any) => {
+                  const component = factory(
+                     { requestRender() { }, terminal: { rows: 40 } },
+                     createTheme(),
+                     createKeybindings(),
+                     () => { },
+                  );
+                  rendered = component.render(80);
+                  return null;
+               },
+            },
+         },
+      );
+
+      const joined = rendered.join("\n");
+      expect(result.isError).not.toBe(true);
+      expect(rendered.length).toBeLessThanOrEqual(34);
+      expect(rendered.length).toBeGreaterThan(16);
+      expect(joined).toContain("Option 15");
+      expect(joined).not.toContain("(1/15)");
+   });
+
    test.each([
       { width: 40, rows: 12 },
       { width: 60, rows: 20 },
