@@ -62,10 +62,28 @@ assert.deepEqual(rpcResult.details.response, { kind: "selection", selections: ["
 assert.deepEqual(answered, [{ question: "Continue?", response: { kind: "selection" } }]);
 assert.deepEqual(blocked, [true, false]);
 
-const headless = await tool.execute("smoke-no-ui", { question: "Continue?" },
-   undefined, undefined, { hasUI: false });
-assert.equal(headless.isError, true);
-assert.match(headless.content[0].text, /requires interactive mode/);
+await assert.rejects(
+   tool.execute("smoke-no-ui", { question: "Continue?" }, undefined, undefined, { hasUI: false }),
+   /requires interactive mode/,
+);
+await assert.rejects(
+   tool.execute("smoke-malformed", { question: "Continue?", options: [{ title: " " }] },
+      undefined, undefined, { hasUI: true, ui: {} }),
+   /option\(s\) were malformed/,
+);
+for (const failure of [new Error("UI failed"), "UI failed"]) {
+   blocked.length = 0;
+   await assert.rejects(
+      tool.execute("smoke-ui-error", { question: "Continue?", options: [{ title: "Yes" }] },
+         undefined, undefined, {
+            hasUI: true,
+            ui: { custom: async () => { throw failure; } },
+         }),
+      { name: "Error", message: "UI failed" },
+   );
+   assert.deepEqual(blocked, [true, false]);
+}
+assert.equal(answered.length, 1, "Failed calls must not emit an answer");
 
 // Use the host's actual theme, TUI components, key parser, and cell-width calculation.
 // Only the terminal scheduling surface is inert; no real terminal is opened.
@@ -73,6 +91,12 @@ const tuiPackage = pathToFileURL(findPackageJSON("@earendil-works/pi-tui", hostE
 const { getKeybindings, visibleWidth } = await import(new URL("./dist/index.js", tuiPackage));
 const { initTheme, theme } = await import(new URL("./modes/interactive/theme/theme.js", hostEntry));
 initTheme("dark");
+const errorLines = tool.renderResult(
+   { content: [{ type: "text", text: "UI failed" }], details: undefined },
+   { expanded: false, isPartial: false }, theme, { isError: true },
+).render(80).join("\n");
+assert.ok(errorLines.includes("UI failed"));
+assert.ok(!errorLines.includes("Cancelled"));
 for (const title of ["Alpha", "日本語 😀 café"]) {
    const rendered = await tool.execute("smoke-tui", {
       question: "Choose one",
@@ -108,4 +132,4 @@ for (const title of ["Alpha", "日本語 😀 café"]) {
    });
    assert.deepEqual(rendered.details.response, { kind: "selection", selections: [title] });
 }
-console.log("Host smoke passed: registration, schema, RPC select, redacted event, no-UI error, native TUI.");
+console.log("Host smoke passed: registration, schema, RPC select, redacted event, thrown errors, error rendering, native TUI.");
