@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Tool execution failures now throw so Pi records malformed options, unavailable UI, and UI failures as errors. Error rendering uses the host's error context while retaining support for older stored error details. Adapted from #53.
 - Tool cancellation now dismisses freeform and RPC dialogs, rejects late answers, and prevents follow-up dialogs after abort. Builds on the signal-forwarding fix proposed in #49.
 - Cancelling or timing out an optional RPC comment cancels the answer; pressing Enter with an empty comment still skips it.
 - Custom prompts release their timeout and abort listener on every exit and complete at most once.

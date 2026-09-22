@@ -202,7 +202,7 @@ Set `PI_ASK_USER_EMIT_FULL_EVENTS=true` (or `1`, `yes`, `on`) to restore the ful
 
 ## Result details
 
-Answers, cancellations, and non-interactive fallback results include structured prompt `details` for rendering and session state reconstruction:
+Answers and cancellations include structured prompt `details` for rendering and session state reconstruction:
 
 ```typescript
 type AskResponse =
@@ -216,11 +216,9 @@ interface AskToolDetails {
   response: AskResponse | null;
   cancelled: boolean;
 }
-
-type AskResultDetails = AskToolDetails | { error: string };
 ```
 
-When every supplied option is malformed, or a custom UI or fallback-dialog failure is caught, the result instead has `isError: true` with `details: { error: string }`. A non-interactive fallback also sets `isError: true`, but keeps the `AskToolDetails` shape with `response: null` and `cancelled: true`.
+Malformed options, unavailable interactive UI, and UI failures throw so Pi records a failed tool call rather than a successful answer. These host-created error results do not guarantee the `AskToolDetails` shape. Error rendering also accepts older stored results with `details: { error: string }`.
 
 ## Contributing
 
