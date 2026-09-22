@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.15.1](https://github.com/edlsh/pi-ask-user/releases/tag/v0.15.1) - 2026-09-22
 
 ### Fixed
 
@@ -9,6 +9,11 @@
 - Cancelling or timing out an optional RPC comment cancels the answer; pressing Enter with an empty comment still skips it.
 - Custom prompts release their timeout and abort listener on every exit and complete at most once.
 - Displayed freeform prompts now emit `ask:cancelled` consistently with structured prompts, preserving default event redaction.
+- Bundled skill examples now match the registered option schema; README parameter, privacy, result, and package-link guidance is corrected.
+
+### Development
+
+- Added pinned development tooling, a lockfile, strict typechecks, real-host and documentation validation, package-content checks, and CI across Node.js 22/24 and Pi 0.74.0/0.87.0.
 
 ## [0.15.0](https://github.com/edlsh/pi-ask-user/releases/tag/v0.15.0) - 2026-09-02
 
