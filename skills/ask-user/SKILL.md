@@ -131,10 +131,10 @@ Good options include a short description when trade-offs are non-obvious.
   "question": "Select the first-wave hardening items to implement now.",
   "context": "We can ship quickly with baseline controls, then add targeted hardening. Budget is limited to 1-2 days.",
   "options": [
-    "Rate limiting",
-    "Audit logging",
-    "Input schema validation",
-    "Secrets rotation"
+    { "title": "Rate limiting" },
+    { "title": "Audit logging" },
+    { "title": "Input schema validation" },
+    { "title": "Secrets rotation" }
   ],
   "allowMultiple": true,
   "allowFreeform": true

@@ -20,6 +20,8 @@ when intentionally updating development dependencies.
 - `bun run typecheck`: strict TypeScript checks for source and tests.
 - `bun run check:host`: load the extension through the real installed Pi host and
   verify its schema, dialog fallback, and event contract without a model request.
+- `bun run check:docs`: validate all documented JSON examples against the schema
+  registered by the real host.
 - `bun run check:package`: verify the npm package contains exactly its intended
   runtime and documentation files.
 
