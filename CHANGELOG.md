@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Tool cancellation now dismisses freeform and RPC dialogs, rejects late answers, and prevents follow-up dialogs after abort. Builds on the signal-forwarding fix proposed in #49.
+- Cancelling or timing out an optional RPC comment cancels the answer; pressing Enter with an empty comment still skips it.
+- Custom prompts release their timeout and abort listener on every exit and complete at most once.
+- Displayed freeform prompts now emit `ask:cancelled` consistently with structured prompts, preserving default event redaction.
+
 ## [0.15.0](https://github.com/edlsh/pi-ask-user/releases/tag/v0.15.0) - 2026-09-02
 
 ### Added

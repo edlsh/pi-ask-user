@@ -171,6 +171,12 @@ While an `ask_user` prompt is open:
 
 If you prefer never to see the overlay, set `displayMode: "inline"` per call or `PI_ASK_USER_DISPLAY_MODE=inline` globally.
 
+### Cancellation
+
+Aborting a tool call dismisses its active prompt, including freeform and RPC dialogs. Cancelling or timing out an optional RPC comment cancels the whole answer; press Enter with an empty comment to submit the selection without a comment.
+
+The custom UI uses one timeout for the prompt. In the dialog fallback, the configured timeout applies separately to each dialog stage.
+
 ### Mobile-sized terminals
 
 If context wraps beyond the available decision area, `ask_user` collapses it into a one-line summary so the question and at least one choice remain visible. Press the context key shown in the prompt (`ctrl+e` by default) to expand or collapse the complete context; expanded context remains bounded and scrollable with the existing prompt-scroll keys in both display modes.
@@ -179,7 +185,7 @@ If context wraps beyond the available decision area, `ask_user` collapses it int
 
 While an interactive prompt is open, the extension emits `herdr:blocked` with `{ active: true, label: "Waiting for user response" }`. It emits `{ active: false }` in `finally`, including cancellation and error paths. Hosts without a listener are unaffected.
 
-When the prompt resolves it emits `ask:answered` or `ask:cancelled`. Every installed extension receives these, so by default they carry only what is needed to correlate the prompt with its outcome:
+When a displayed prompt resolves with an answer or cancellation, it emits `ask:answered` or `ask:cancelled`. Calls aborted before a prompt opens emit neither outcome event. Every installed extension receives these, so by default they carry only what is needed to correlate the prompt with its outcome:
 
 ```typescript
 // ask:answered

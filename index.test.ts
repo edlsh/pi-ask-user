@@ -1,4 +1,5 @@
-import { beforeAll, describe, expect, mock, onTestFinished, test } from "bun:test";
+import { beforeAll, describe, expect, mock, onTestFinished, spyOn, test } from "bun:test";
+import { getEventListeners } from "node:events";
 import type { StringEnumBuilder } from "./index";
 
 let editorInputs: string[] = [];
@@ -3169,4 +3170,237 @@ describe("ask_user", () => {
          expect(capturedOpts).toEqual({ timeout: 5000 });
       });
    });
+});
+
+describe("cancellation correctness", () => {
+   const stages = [
+      { name: "no-options input", params: { options: [] }, stage: "input", value: "late answer" },
+      { name: "RPC select", params: {}, stage: "select", value: "A" },
+      { name: "RPC multi-input", params: { allowMultiple: true }, stage: "input", value: "A" },
+      { name: "RPC freeform input", params: {}, stage: "input", value: "late answer", freeform: true },
+      { name: "RPC single comment", params: { allowComment: true }, stage: "input", value: "late comment" },
+      { name: "RPC multi comment", params: { allowMultiple: true, allowComment: true }, stage: "comment", value: "late comment" },
+   ];
+
+   for (const stage of stages) {
+      for (const honorsSignal of [true, false]) {
+         test(`${stage.name}: abort cancels ${honorsSignal ? "pending" : "late"} response without another dialog`, async () => {
+            const tool = await setupTool();
+            const controller = new AbortController();
+            let opened!: () => void;
+            const pending = new Promise<void>((resolve) => { opened = resolve; });
+            let finish!: (value: string | undefined) => void;
+            let dialogOpts: any;
+            let dismissed = false;
+            let calls = 0;
+            let inputCalls = 0;
+            const waitForAnswer = (opts: any) => {
+               dialogOpts = opts;
+               opened();
+               return new Promise<string | undefined>((resolve) => {
+                  finish = resolve;
+                  if (honorsSignal) opts?.signal?.addEventListener("abort", () => {
+                     dismissed = true;
+                     resolve(undefined);
+                  }, { once: true });
+               });
+            };
+            const execution = tool.execute(
+               "id",
+               { question: "Pick", context: "private context", options: ["A"], timeout: 5000, ...stage.params },
+               controller.signal,
+               undefined,
+               { hasUI: true, ui: {
+                  custom: async () => undefined,
+                  select: async (_title: string, options: string[], opts: any) => {
+                     calls++;
+                     if (stage.stage === "select") return waitForAnswer(opts);
+                     return stage.freeform ? options[options.length - 1] : "A";
+                  },
+                  input: async (_title: string, _placeholder: string, opts: any) => {
+                     calls++;
+                     inputCalls++;
+                     if (stage.stage === "comment" && inputCalls === 1) return "A";
+                     return waitForAnswer(opts);
+                  },
+               } },
+            );
+            await pending;
+            const callsBeforeAbort = calls;
+            controller.abort();
+            // Release a host which ignores the signal too, so regressions fail without hanging.
+            finish(stage.value);
+            const result = await execution;
+            expect(dialogOpts).toEqual({ signal: controller.signal, timeout: 5000 });
+            expect(dismissed).toBe(honorsSignal);
+            expect(result.details.cancelled).toBe(true);
+            expect(result.details.response).toBeNull();
+            expect(calls).toBe(callsBeforeAbort);
+            expect(emittedEvents.filter((event) => event.name.startsWith("ask:"))).toEqual([
+               { name: "ask:cancelled", payload: { question: "Pick" } },
+            ]);
+         });
+      }
+   }
+
+   for (const allowMultiple of [false, true]) {
+      for (const comment of [undefined, null, "", "   "]) {
+         test(`RPC ${allowMultiple ? "multi" : "single"} comment distinguishes ${JSON.stringify(comment)} from cancellation`, async () => {
+            const tool = await setupTool();
+            let inputs = 0;
+            const result = await tool.execute(
+               "id", { question: "Pick", options: ["A"], allowMultiple, allowComment: true },
+               undefined, undefined,
+               { hasUI: true, ui: {
+                  custom: async () => undefined,
+                  select: async () => "A",
+                  input: async () => allowMultiple && inputs++ === 0 ? "A" : comment,
+               } },
+            );
+            const cancelled = comment == null;
+            expect(result.details.cancelled).toBe(cancelled);
+            expect(result.details.response).toEqual(cancelled ? null : { kind: "selection", selections: ["A"] });
+            expect(emittedEvents.filter((event) => event.name.startsWith("ask:")).map((event) => event.name))
+               .toEqual([cancelled ? "ask:cancelled" : "ask:answered"]);
+         });
+      }
+   }
+
+   for (const params of [{ allowComment: true }, { allowFreeform: true }, { allowMultiple: true, allowComment: true }]) {
+      test(`abort after first RPC answer prevents follow-up ${JSON.stringify(params)}`, async () => {
+         const tool = await setupTool();
+         const controller = new AbortController();
+         let calls = 0;
+         const result = await tool.execute(
+            "id", { question: "Pick", options: ["A"], ...params }, controller.signal, undefined,
+            { hasUI: true, ui: {
+               custom: async () => undefined,
+               select: async (_title: string, options: string[]) => {
+                  calls++;
+                  controller.abort();
+                  return params.allowFreeform ? options[options.length - 1] : "A";
+               },
+               input: async () => { calls++; controller.abort(); return "A"; },
+            } },
+         );
+         expect(calls).toBe(1);
+         expect(result.details.cancelled).toBe(true);
+      });
+   }
+
+   test("abort while custom UI is unavailable prevents opening an RPC dialog", async () => {
+      const tool = await setupTool();
+      const controller = new AbortController();
+      let dialogs = 0;
+      const result = await tool.execute(
+         "id", { question: "Pick", options: ["A"] }, controller.signal, undefined,
+         { hasUI: true, ui: {
+            custom: async () => { controller.abort(); return undefined; },
+            select: async () => { dialogs++; return "A"; },
+         } },
+      );
+      expect(dialogs).toBe(0);
+      expect(result.details.cancelled).toBe(true);
+   });
+
+   for (const fullEvents of [false, true]) {
+      for (const answer of [undefined, null, "", "   "]) {
+         test(`displayed freeform cancellation emits one ${fullEvents ? "full" : "redacted"} event: ${JSON.stringify(answer)}`, async () => {
+            stubEnv("PI_ASK_USER_EMIT_FULL_EVENTS", String(fullEvents));
+            const tool = await setupTool();
+            const result = await tool.execute(
+               "id", { question: "Why?", context: "private context" }, undefined, undefined,
+               { hasUI: true, ui: { input: async () => answer } },
+            );
+            expect(result.details.cancelled).toBe(true);
+            expect(emittedEvents.filter((event) => event.name.startsWith("ask:"))).toEqual([
+               { name: "ask:cancelled", payload: fullEvents
+                  ? { question: "Why?", context: "private context", options: [] }
+                  : { question: "Why?" } },
+            ]);
+         });
+      }
+   }
+
+   test("abort between an RPC answer and its caller resuming still cancels", async () => {
+      const tool = await setupTool();
+      const controller = new AbortController();
+      const result = await tool.execute(
+         "id", { question: "Pick", options: ["A"] }, controller.signal, undefined,
+         { hasUI: true, ui: {
+            custom: async () => undefined,
+            select: async () => {
+               queueMicrotask(() => queueMicrotask(() => controller.abort()));
+               return "A";
+            },
+         } },
+      );
+      expect(result.details.cancelled).toBe(true);
+      expect(result.details.response).toBeNull();
+   });
+
+   test("already-aborted calls do not display or emit an outcome", async () => {
+      const tool = await setupTool();
+      const controller = new AbortController();
+      controller.abort();
+      const result = await tool.execute("id", { question: "Pick" }, controller.signal, undefined, { hasUI: true, ui: {} });
+      expect(result.details.cancelled).toBe(true);
+      expect(emittedEvents).toEqual([]);
+   });
+
+   for (const outcome of ["answer", "escape", "timeout", "abort", "factory-abort", "construction-error", "host-error"]) {
+      test(`custom ${outcome} releases owned resources and completes at most once`, async () => {
+         const tool = await setupTool();
+         const controller = new AbortController();
+         const timers = new Map<number, () => void>();
+         const callbacks: Array<() => void> = [];
+         const setTimer = spyOn(globalThis, "setTimeout").mockImplementation(((callback: () => void) => {
+            callbacks.push(callback);
+            const id = callbacks.length;
+            timers.set(id, callback);
+            return id;
+         }) as any);
+         const clearTimer = spyOn(globalThis, "clearTimeout").mockImplementation(((id: number) => { timers.delete(id); }) as any);
+         onTestFinished(() => { setTimer.mockRestore(); clearTimer.mockRestore(); });
+         let completions = 0;
+         let component: any;
+         let completedAtFactoryReturn = false;
+         const result = await tool.execute(
+            "id", { question: "Pick", options: ["A"], timeout: 3600000 }, controller.signal, undefined,
+            { hasUI: true, ui: {
+               custom: async (factory: any) => {
+                  if (outcome === "factory-abort") controller.abort();
+                  let resolve!: (value: any) => void;
+                  const completion = new Promise((done) => { resolve = done; });
+                  component = factory(
+                     { requestRender() {}, terminal: { rows: 24 } },
+                     outcome === "construction-error" ? { fg() { throw new Error("bad theme"); } } : createTheme(),
+                     createKeybindings(),
+                     (value: any) => { completions++; resolve(value); },
+                  );
+                  completedAtFactoryReturn = completions === 1;
+                  if (outcome === "host-error") throw new Error("host rejected custom UI");
+                  if (outcome === "answer") component.handleInput("enter");
+                  if (outcome === "escape") component.handleInput("escape");
+                  if (outcome === "timeout") callbacks[0]?.();
+                  if (outcome === "abort") controller.abort();
+                  // A broken factory-abort path must fail rather than leave the test pending.
+                  if (outcome === "factory-abort" && !completedAtFactoryReturn) component.handleInput("enter");
+                  return completion;
+               },
+            } },
+         );
+         const isError = outcome.endsWith("error");
+         expect(result.isError === true).toBe(isError);
+         if (!isError) expect(result.details.cancelled).toBe(outcome !== "answer");
+         if (outcome === "factory-abort") expect(completedAtFactoryReturn).toBe(true);
+         expect(getEventListeners(controller.signal, "abort")).toHaveLength(0);
+         expect(timers.size).toBe(0);
+         callbacks.forEach((callback) => callback());
+         controller.abort();
+         component?.handleInput("enter");
+         expect(completions).toBe(isError ? 0 : 1);
+         expect(emittedEvents.filter((event) => event.name === "herdr:blocked").at(-1)?.payload).toEqual({ active: false });
+      });
+   }
 });

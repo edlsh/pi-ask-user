@@ -1972,9 +1972,9 @@ async function askViaDialogs(
    allowMultiple: boolean,
    allowFreeform: boolean,
    allowComment: boolean,
-   timeout?: number,
+   dialogOpts?: { signal?: AbortSignal; timeout?: number },
 ): Promise<AskUIResult | null> {
-   const dialogOpts = timeout ? { timeout } : undefined;
+   if (dialogOpts?.signal?.aborted) return null;
    const prompt = context ? `${question}\n\nContext:\n${context}` : question;
 
    if (allowMultiple) {
@@ -1984,7 +1984,7 @@ async function askViaDialogs(
          "Type your selection(s)...",
          dialogOpts,
       ) as string | undefined;
-      if (isCancelledInput(rawSelections)) return null;
+      if (dialogOpts?.signal?.aborted || isCancelledInput(rawSelections)) return null;
 
       const selections = parseDialogSelections(rawSelections);
       if (selections.length === 0) return null;
@@ -1998,6 +1998,7 @@ async function askViaDialogs(
          "Optional comment (press Enter to skip)...",
          dialogOpts,
       ) as string | undefined;
+      if (dialogOpts?.signal?.aborted || isCancelledInput(comment)) return null;
       return createSelectionResponse(selections, comment);
    }
 
@@ -2005,11 +2006,11 @@ async function askViaDialogs(
    if (allowFreeform) selectOptions.push(FREEFORM_SENTINEL);
 
    const selected = await ui.select(prompt, selectOptions, dialogOpts) as string | undefined;
-   if (isCancelledInput(selected)) return null;
+   if (dialogOpts?.signal?.aborted || isCancelledInput(selected)) return null;
 
    if (selected === FREEFORM_SENTINEL) {
       const answer = await ui.input(prompt, "Type your answer...", dialogOpts) as string | undefined;
-      if (isCancelledInput(answer)) return null;
+      if (dialogOpts?.signal?.aborted || isCancelledInput(answer)) return null;
       return createFreeformResponse(answer);
    }
 
@@ -2022,6 +2023,7 @@ async function askViaDialogs(
       "Optional comment (press Enter to skip)...",
       dialogOpts,
    ) as string | undefined;
+   if (dialogOpts?.signal?.aborted || isCancelledInput(comment)) return null;
    return createSelectionResponse([selected], comment);
 }
 
@@ -2156,6 +2158,9 @@ export default function(pi: ExtensionAPI) {
          };
          const options = rawOptions.map(coerceOption).filter((option): option is QuestionOption => option !== null);
          const normalizedContext = context?.trim() || undefined;
+         const dialogOpts = signal
+            ? (timeout ? { signal, timeout } : { signal })
+            : (timeout ? { timeout } : undefined);
          // Every installed extension receives these events. By default only the
          // question and the response kind are broadcast; the context and the
          // user's actual selections/comment/freeform text stay inside the tool
@@ -2211,13 +2216,14 @@ export default function(pi: ExtensionAPI) {
             pi.events.emit("herdr:blocked", { active: true, label: "Waiting for user response" });
             let answer: string | undefined;
             try {
-               answer = await ctx.ui.input(prompt, "Type your answer...", timeout ? { timeout } : undefined);
+               answer = await ctx.ui.input(prompt, "Type your answer...", dialogOpts);
             } finally {
                pi.events.emit("herdr:blocked", { active: false });
             }
-            const response = createFreeformResponse(answer);
+            const response = signal?.aborted ? null : createFreeformResponse(answer);
 
             if (!response) {
+               emitCancelled();
                return {
                   content: [{ type: "text", text: "User cancelled the question" }],
                   details: { question, context: normalizedContext, options, response: null, cancelled: true } as AskToolDetails,
@@ -2239,17 +2245,27 @@ export default function(pi: ExtensionAPI) {
          let result: AskUIResult | null;
          let overlayHandle: OverlayHandle | undefined;
          let removeOverlayInputListener: (() => void) | undefined;
+         let customTimer: ReturnType<typeof setTimeout> | undefined;
+         let onCustomAbort: (() => void) | undefined;
+         let customCompleted = false;
          let hasAnnouncedHide = false;
          pi.events.emit("herdr:blocked", { active: true, label: "Waiting for user response" });
          try {
             const customFactory = (tui: TUI, theme: Theme, keybindings: KeybindingsManager, done: (result: AskUIResult | null) => void) => {
+               const complete = (value: AskUIResult | null) => {
+                  if (customCompleted) return;
+                  customCompleted = true;
+                  done(signal?.aborted ? null : value);
+               };
                if (signal) {
-                  const onAbort = () => done(null);
-                  signal.addEventListener("abort", onAbort, { once: true });
+                  onCustomAbort = () => complete(null);
+                  signal.addEventListener("abort", onCustomAbort, { once: true });
                }
 
-               if (timeout && timeout > 0) {
-                  setTimeout(() => done(null), timeout);
+               if (signal?.aborted) {
+                  complete(null);
+               } else if (timeout && timeout > 0) {
+                  customTimer = setTimeout(() => complete(null), timeout);
                }
 
                return new AskComponent(
@@ -2266,7 +2282,7 @@ export default function(pi: ExtensionAPI) {
                   theme,
                   keybindings,
                   shortcuts,
-                  done,
+                  complete,
                );
             };
 
@@ -2298,18 +2314,29 @@ export default function(pi: ExtensionAPI) {
                });
             }
 
-            const customResult = await ctx.ui.custom<AskUIResult | null>(
+            const customResult = signal?.aborted ? null : await ctx.ui.custom<AskUIResult | null>(
                customFactory,
                buildCustomUIOptions(effectiveDisplayMode, (handle) => {
                   overlayHandle = handle;
                }),
             );
 
-            if (customResult !== undefined) {
+            if (signal?.aborted) {
+               result = null;
+            } else if (customResult !== undefined) {
                result = customResult;
             } else {
                // RPC/headless mode: degrade to select()/input() dialog protocol
-               result = await askViaDialogs(ctx.ui, question, normalizedContext, options, allowMultiple, allowFreeform, allowComment, timeout);
+               result = await askViaDialogs(
+                  ctx.ui,
+                  question,
+                  normalizedContext,
+                  options,
+                  allowMultiple,
+                  allowFreeform,
+                  allowComment,
+                  dialogOpts,
+               );
             }
          } catch (error) {
             const message =
@@ -2320,11 +2347,14 @@ export default function(pi: ExtensionAPI) {
                details: { error: message },
             };
          } finally {
+            customCompleted = true;
+            if (customTimer !== undefined) clearTimeout(customTimer);
+            if (onCustomAbort) signal?.removeEventListener("abort", onCustomAbort);
             removeOverlayInputListener?.();
             pi.events.emit("herdr:blocked", { active: false });
          }
 
-         if (result === null) {
+         if (signal?.aborted || result === null) {
             emitCancelled();
             return {
                content: [{ type: "text", text: "User cancelled the question" }],
