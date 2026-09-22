@@ -86,9 +86,9 @@ Guidance:
   "question": "Which requirement should be prioritized first?",
   "context": "Current request mixes performance tuning and UI redesign. Doing both now risks delaying delivery.",
   "options": [
-    "Performance first",
-    "UI redesign first",
-    "Do a minimal pass on both"
+    { "title": "Performance first" },
+    { "title": "UI redesign first" },
+    { "title": "Do a minimal pass on both" }
   ],
   "allowMultiple": false,
   "allowFreeform": true

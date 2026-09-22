@@ -4,9 +4,9 @@ A Pi package that adds an interactive `ask_user` tool for collecting user decisi
 
 ## Demo
 
-![ask_user demo](./media/ask-user-demo.gif)
+![ask_user demo](https://raw.githubusercontent.com/edlsh/pi-ask-user/main/media/ask-user-demo.gif)
 
-High-quality video: [ask-user-demo.mp4](./media/ask-user-demo.mp4)
+High-quality video: [ask-user-demo.mp4](https://github.com/edlsh/pi-ask-user/blob/main/media/ask-user-demo.mp4)
 
 ## Features
 
@@ -24,7 +24,7 @@ High-quality video: [ask-user-demo.mp4](./media/ask-user-demo.mp4)
 - System prompt integration via `promptSnippet` and `promptGuidelines`
 - Optional timeout for auto-dismiss in both overlay and fallback input modes
 - `herdr:blocked` lifecycle events while waiting for interactive input
-- Structured `details` on all results for session state reconstruction
+- Structured response and cancellation `details` for session state reconstruction
 - Graceful fallback when interactive UI is unavailable
 - Bundled `ask-user` skill for mandatory decision-gating in high-stakes or ambiguous tasks
 
@@ -69,6 +69,7 @@ The registered tool name is:
 | `allowComment` | `boolean?` | env var or `false` | Expose a user-toggleable extra-context option in the custom UI (`ctrl+g` or the toggle row) and collect an optional comment in fallback dialogs |
 | `displayMode` | `"overlay" \| "inline"?` | env var or `"overlay"` | Controls custom UI rendering: `overlay` shows the centered modal (current behavior), `inline` renders without overlay framing |
 | `singleSelectLayout` | `"auto" \| "list"?` | env var or `"auto"` | Use the responsive details pane automatically or always render descriptions below their options |
+| `contextExpanded` | `boolean?` | env var or `false` | Start with oversized context expanded. Per-call value overrides `PI_ASK_USER_CONTEXT_EXPANDED` |
 | `overlayToggleKey` | `string?` | env var or `"alt+o"` | Shortcut for hiding/showing the overlay popup (overlay mode only). Pi-TUI key spec, e.g. `"alt+o"`, `"ctrl+shift+h"`. Pass `"off"` to disable. |
 | `commentToggleKey` | `string?` | env var or `"ctrl+g"` | Shortcut for toggling the optional comment/extra-context row when `allowComment: true`. Pass `"off"` to disable. |
 | `timeout` | `number?` | — | Auto-dismiss after N ms and return `null` if the prompt times out |
@@ -102,7 +103,6 @@ export PI_ASK_USER_SINGLE_SELECT_LAYOUT=list
 export PI_ASK_USER_ALLOW_COMMENT=true
 export PI_ASK_USER_OVERLAY_TOGGLE_KEY=alt+h
 export PI_ASK_USER_COMMENT_TOGGLE_KEY=alt+c
-export PI_ASK_USER_EMIT_FULL_EVENTS=true
 export PI_ASK_USER_CONTEXT_EXPANDED=true
 ```
 
@@ -196,7 +196,7 @@ Set `PI_ASK_USER_EMIT_FULL_EVENTS=true` (or `1`, `yes`, `on`) to restore the ful
 
 ## Result details
 
-All tool results include a structured `details` object for rendering and session state reconstruction:
+Answers, cancellations, and non-interactive fallback results include structured prompt `details` for rendering and session state reconstruction:
 
 ```typescript
 type AskResponse =
@@ -210,8 +210,16 @@ interface AskToolDetails {
   response: AskResponse | null;
   cancelled: boolean;
 }
+
+type AskResultDetails = AskToolDetails | { error: string };
 ```
+
+When every supplied option is malformed, or a custom UI or fallback-dialog failure is caught, the result instead has `isError: true` with `details: { error: string }`. A non-interactive fallback also sets `isError: true`, but keeps the `AskToolDetails` shape with `response: null` and `cancelled: true`.
+
+## Contributing
+
+See [CONTRIBUTING.md](https://github.com/edlsh/pi-ask-user/blob/main/CONTRIBUTING.md) for development setup and checks.
 
 ## Changelog
 
-See [CHANGELOG.md](./CHANGELOG.md).
+See [CHANGELOG.md](https://github.com/edlsh/pi-ask-user/blob/main/CHANGELOG.md).
