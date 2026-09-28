@@ -33,6 +33,7 @@ import {
    wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 import { renderSingleSelectRows, type QuestionOption } from "./single-select-layout";
+import { loadAskUserSettings } from "./settings";
 
 import { createRequire } from "node:module";
 const _require = createRequire(import.meta.url);
@@ -386,9 +387,10 @@ function buildShortcut(spec: string): ResolvedShortcut {
 function resolveShortcut(
    paramValue: string | null | undefined,
    envValue: string | undefined,
+   fileValue: string | undefined,
    defaultSpec: string,
 ): ResolvedShortcut {
-   const candidates: Array<string | null | undefined> = [paramValue, envValue, defaultSpec];
+   const candidates: Array<string | null | undefined> = [paramValue, envValue, fileValue, defaultSpec];
    for (const raw of candidates) {
       const normalized = normalizeShortcutSpec(raw);
       if (normalized === undefined) continue; // not provided, fall through
@@ -2075,33 +2077,33 @@ export default function(pi: ExtensionAPI) {
             Type.Boolean({ description: "Add a freeform text option. Default: true" }),
          ),
          allowComment: Type.Optional(
-            Type.Boolean({ description: "Collect an optional comment after selecting one or more options. Default: PI_ASK_USER_ALLOW_COMMENT env var if set, otherwise false." }),
+            Type.Boolean({ description: "Collect an optional comment after selecting one or more options. Default: PI_ASK_USER_ALLOW_COMMENT env var or allowComment in ~/.pi/agent/ask-user.json (respecting PI_CODING_AGENT_DIR) if set, otherwise false." }),
          ),
          displayMode: Type.Optional(
             StringEnum(["overlay", "inline"] as const, {
-               description: "UI rendering mode. 'overlay' shows a centered modal, 'inline' renders in-place. Default: PI_ASK_USER_DISPLAY_MODE env var if set, otherwise 'overlay'. Omit to respect the user's configured preference.",
+               description: "UI rendering mode. 'overlay' shows a centered modal, 'inline' renders in-place. Default: PI_ASK_USER_DISPLAY_MODE env var, then displayMode in ~/.pi/agent/ask-user.json (respecting PI_CODING_AGENT_DIR), otherwise 'overlay'. Omit to respect the user's configured preference.",
             }),
          ),
          singleSelectLayout: Type.Optional(
             StringEnum(["auto", "list"] as const, {
-               description: "Single-select layout. 'auto' uses a details pane on wide terminals; 'list' always keeps descriptions below options. Default: PI_ASK_USER_SINGLE_SELECT_LAYOUT if set, otherwise 'auto'.",
+               description: "Single-select layout. 'auto' uses a details pane on wide terminals; 'list' always keeps descriptions below options. Default: PI_ASK_USER_SINGLE_SELECT_LAYOUT env var, then singleSelectLayout in ~/.pi/agent/ask-user.json (respecting PI_CODING_AGENT_DIR), otherwise 'auto'.",
             }),
          ),
          contextExpanded: Type.Optional(
             Type.Boolean({
-               description: "Start with oversized context expanded instead of collapsed behind a one-line summary. Default: PI_ASK_USER_CONTEXT_EXPANDED env var if set, otherwise false.",
+               description: "Start with oversized context expanded instead of collapsed behind a one-line summary. Default: PI_ASK_USER_CONTEXT_EXPANDED env var or contextExpanded in ~/.pi/agent/ask-user.json (respecting PI_CODING_AGENT_DIR) if set, otherwise false.",
             }),
          ),
          overlayToggleKey: Type.Optional(
             Type.String({
                description:
-                  "Shortcut for hiding/showing the overlay popup (overlay mode only), e.g. 'alt+o' or 'ctrl+shift+h'. Pass 'off' to disable. Default: PI_ASK_USER_OVERLAY_TOGGLE_KEY env var if set, otherwise 'alt+o'.",
+                  "Shortcut for hiding/showing the overlay popup (overlay mode only), e.g. 'alt+o' or 'ctrl+shift+h'. Pass 'off' to disable. Default: PI_ASK_USER_OVERLAY_TOGGLE_KEY env var, then overlayToggleKey in ~/.pi/agent/ask-user.json (respecting PI_CODING_AGENT_DIR), otherwise 'alt+o'.",
             }),
          ),
          commentToggleKey: Type.Optional(
             Type.String({
                description:
-                  "Shortcut for toggling the optional comment/extra-context row when allowComment is true, e.g. 'ctrl+g'. Pass 'off' to disable. Default: PI_ASK_USER_COMMENT_TOGGLE_KEY env var if set, otherwise 'ctrl+g'.",
+                  "Shortcut for toggling the optional comment/extra-context row when allowComment is true, e.g. 'ctrl+g'. Pass 'off' to disable. Default: PI_ASK_USER_COMMENT_TOGGLE_KEY env var, then commentToggleKey in ~/.pi/agent/ask-user.json (respecting PI_CODING_AGENT_DIR), otherwise 'ctrl+g'.",
             }),
          ),
          timeout: Type.Optional(
@@ -2134,25 +2136,33 @@ export default function(pi: ExtensionAPI) {
          const envMode = process.env.PI_ASK_USER_DISPLAY_MODE?.trim().toLowerCase();
          const envDisplayMode: AskDisplayMode | undefined =
             envMode === "overlay" || envMode === "inline" ? envMode : undefined;
-         const effectiveDisplayMode: AskDisplayMode = displayMode ?? envDisplayMode ?? "overlay";
+         // Precedence: per-call parameter > PI_ASK_USER_* env var > ask-user.json > built-in default.
+         const settings = loadAskUserSettings();
+         const effectiveDisplayMode: AskDisplayMode = displayMode ?? envDisplayMode ?? settings.displayMode ?? "overlay";
          const envSingleSelectLayout = process.env.PI_ASK_USER_SINGLE_SELECT_LAYOUT?.trim().toLowerCase();
          const effectiveSingleSelectLayout: AskSingleSelectLayout = singleSelectLayout
-            ?? (envSingleSelectLayout === "list" ? "list" : "auto");
+            ?? (envSingleSelectLayout === "list" || envSingleSelectLayout === "auto" ? envSingleSelectLayout : undefined)
+            ?? settings.singleSelectLayout
+            ?? "auto";
          const allowComment = requestedAllowComment
             ?? parseBooleanPreference(process.env.PI_ASK_USER_ALLOW_COMMENT)
+            ?? settings.allowComment
             ?? false;
          const contextExpanded = requestedContextExpanded
             ?? parseBooleanPreference(process.env.PI_ASK_USER_CONTEXT_EXPANDED)
+            ?? settings.contextExpanded
             ?? false;
          const shortcuts: ResolvedAskShortcuts = {
             overlayToggle: resolveShortcut(
                overlayToggleKey,
                process.env.PI_ASK_USER_OVERLAY_TOGGLE_KEY,
+               settings.overlayToggleKey,
                DEFAULT_OVERLAY_TOGGLE_KEY,
             ),
             commentToggle: resolveShortcut(
                commentToggleKey,
                process.env.PI_ASK_USER_COMMENT_TOGGLE_KEY,
+               settings.commentToggleKey,
                DEFAULT_COMMENT_TOGGLE_KEY,
             ),
          };
@@ -2165,7 +2175,9 @@ export default function(pi: ExtensionAPI) {
          // question and the response kind are broadcast; the context and the
          // user's actual selections/comment/freeform text stay inside the tool
          // result unless the user opts in (#51).
-         const emitFullEvents = parseBooleanPreference(process.env.PI_ASK_USER_EMIT_FULL_EVENTS) ?? false;
+         const emitFullEvents = parseBooleanPreference(process.env.PI_ASK_USER_EMIT_FULL_EVENTS)
+            ?? settings.emitFullEvents
+            ?? false;
          const emitAnswered = (response: AskResponse): void => {
             pi.events.emit(
                "ask:answered",

@@ -75,7 +75,7 @@ The `ask_user` tool accepts an optional `displayMode` parameter:
 
 Guidance:
 
-- Omit `displayMode` to respect the user's configured preference (`PI_ASK_USER_DISPLAY_MODE` environment variable).
+- Omit `displayMode` to respect the user's configured preference (`PI_ASK_USER_DISPLAY_MODE` environment variable or `displayMode` in `ask-user.json`).
 - Pass `"inline"` only when the immediately preceding assistant message (summary, trade-offs, recommendation) is the primary context for the decision and must remain visible.
 - Pass `"overlay"` only to explicitly force the modal style (rare).
 

@@ -9,6 +9,7 @@ const expectedFiles = [
   "README.md",
   "index.ts",
   "package.json",
+  "settings.ts",
   "single-select-layout.ts",
   "skills/ask-user/SKILL.md",
   "skills/ask-user/references/ask-user-skill-extension-spec.md",
