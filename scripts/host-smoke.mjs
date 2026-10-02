@@ -164,12 +164,16 @@ for (const title of ["Alpha", "日本語 😀 café"]) {
 // Short reviews: every answer must be reachable by scrolling, within the height
 // cap and the width, with real wrapping. Inline matches Pi's fullscreen dock.
 const longQuestion = (n) => `Question ${n}: which of these fairly long options should the service use?`;
+// At width 40 the answer row "   → " plus this 31-cell title fills the inner width
+// exactly, so an overflow marker that costs width would cut off the "Z<n>Q" tail.
+const fullWidthAnswer = (n) => `Answer ${n} ${"a".repeat(19)}Z${n}Q`;
 for (const { displayMode, width, rows, cap } of [
    { displayMode: "overlay", width: 80, rows: 8, cap: 6 },
+   { displayMode: "overlay", width: 40, rows: 7, cap: 5 },
    { displayMode: "inline", width: 40, rows: 12, cap: 7 },
 ]) {
    await tool.execute("smoke-batch-short", {
-      questions: [1, 2, 3, 4].map((n) => ({ question: longQuestion(n), options: [{ title: `Answer ${n}` }] })),
+      questions: [1, 2, 3, 4].map((n) => ({ question: longQuestion(n), options: [{ title: fullWidthAnswer(n) }] })),
       allowComment: false,
       displayMode,
    }, undefined, undefined, {
@@ -189,12 +193,12 @@ for (const { displayMode, width, rows, cap } of [
                assert.ok(lines.some((line) => line.includes("submit")), `${displayMode} review hides its hints`);
                for (const line of lines) {
                   assert.ok(visibleWidth(line) <= width, `${displayMode} review line exceeds ${width} columns`);
-                  const answer = line.match(/Answer [1-4]/);
+                  const answer = line.match(/Z[1-4]Q/);
                   if (answer) seen.add(answer[0]);
                }
                component.handleInput("\x1b[B");
             }
-            assert.deepEqual([...seen].sort(), ["Answer 1", "Answer 2", "Answer 3", "Answer 4"]);
+            assert.deepEqual([...seen].sort(), ["Z1Q", "Z2Q", "Z3Q", "Z4Q"], `${displayMode} ${width}x${rows} review hides answer text`);
             component.handleInput("\r");
             return response;
          },

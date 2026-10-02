@@ -2209,7 +2209,10 @@ class BatchAskComponent implements Component {
    private renderReview(width: number): string[] {
       const theme = this.theme;
       const innerWidth = Math.max(1, width - BOX_BORDER_OVERHEAD);
-      const wrap = (text: string) => wrapTextWithAnsi(text, innerWidth);
+      // Answer rows leave room for a two-cell overflow marker ("↑ ", "↓ ", "↕ "),
+      // so marking a row never truncates its text. The footer is never marked.
+      const wrap = (text: string) => wrapTextWithAnsi(text, Math.max(1, innerWidth - 2));
+      const wrapFooter = (text: string) => wrapTextWithAnsi(text, innerWidth);
       const contentLines = [
          ...wrap(theme.fg("accent", theme.bold("Review answers"))),
          "",
@@ -2239,7 +2242,7 @@ class BatchAskComponent implements Component {
          : undefined;
       const hintText = theme.fg("dim", hints);
       const bodyCapacity = Math.max(1, this.reviewLineCap() - 2);
-      let footerLines = ["", ...(warningText ? wrap(warningText) : []), ...wrap(hintText)];
+      let footerLines = ["", ...(warningText ? wrapFooter(warningText) : []), ...wrapFooter(hintText)];
       // On very short prompts keep room for answers: drop the spacer and keep
       // the warning and hints to one line each (frameBox truncates them).
       if (bodyCapacity - footerLines.length < REVIEW_MIN_CONTENT_ROWS) {
