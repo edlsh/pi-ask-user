@@ -2126,11 +2126,10 @@ async function askBatchSequentially(
          const answer = await ui.input(prompt, "Type your answer...", answerOpts);
          response = signal?.aborted ? null : createFreeformResponse(answer);
       } else {
-         const remaining = deadline === undefined ? undefined : deadline - Date.now();
-         if (remaining !== undefined && remaining <= 0) return null;
+         // No per-prompt timer: the batch deadline aborts `signal`, which
+         // dismisses this prompt exactly on time.
          response = await runCustomPrompt<AskUIResult>(ui, {
             signal,
-            timeout: remaining,
             displayMode: settings.displayMode,
             overlayToggle: settings.shortcuts.overlayToggle,
             createComponent: (tui, theme, keybindings, complete) => new AskComponent(
@@ -2468,15 +2467,29 @@ async function executeBatch(
    });
 
    const deadline = params.timeout && params.timeout > 0 ? Date.now() + params.timeout : undefined;
-   const answers = await whileBlocked(pi, () => askBatchSequentially(
-      ctx.ui,
-      questions,
-      settings,
-      signal,
-      deadline,
-   ));
+   // One timer owns the batch deadline. It aborts the signal that every prompt
+   // and dialog already listens to, so an open dialog closes exactly on time
+   // (native dialog countdowns round up to whole seconds) and a late answer
+   // cancels the batch. The caller's abort is forwarded to the same signal.
+   const batch = new AbortController();
+   const forwardAbort = () => batch.abort();
+   signal?.addEventListener("abort", forwardAbort, { once: true });
+   const deadlineTimer = deadline === undefined ? undefined : setTimeout(() => batch.abort(), params.timeout);
+   let answers: BatchAnswer[] | null;
+   try {
+      answers = await whileBlocked(pi, () => askBatchSequentially(
+         ctx.ui,
+         questions,
+         settings,
+         batch.signal,
+         deadline,
+      ));
+   } finally {
+      if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
+      signal?.removeEventListener("abort", forwardAbort);
+   }
 
-   if (signal?.aborted || answers === null) {
+   if (batch.signal.aborted || answers === null) {
       subjects.forEach((subject, index) => events.cancelled(subject, { index, total: subjects.length }));
       return {
          content: [{ type: "text", text: "User cancelled the questions" }],

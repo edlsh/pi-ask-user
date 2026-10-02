@@ -3631,14 +3631,27 @@ describe("questions batch", () => {
       });
    }
 
-   for (const elapsedDuringFirst of [600, 1000]) {
-      test(`shares one deadline across questions (${elapsedDuringFirst}ms of 1000ms spent on the first)`, async () => {
+   for (const honorsSignal of [true, false]) {
+      test(`the batch deadline closes an open dialog and rejects a late answer (host ${honorsSignal ? "honors" : "ignores"} the signal)`, async () => {
          let now = 0;
+         const timers: Array<{ callback: () => void; ms: number }> = [];
          const clock = spyOn(Date, "now").mockImplementation(() => now);
-         onTestFinished(() => clock.mockRestore());
+         const setTimer = spyOn(globalThis, "setTimeout").mockImplementation(((callback: () => void, ms: number) => {
+            timers.push({ callback, ms });
+            return timers.length;
+         }) as any);
+         const clearTimer = spyOn(globalThis, "clearTimeout").mockImplementation((() => { }) as any);
+         onTestFinished(() => {
+            clock.mockRestore();
+            setTimer.mockRestore();
+            clearTimer.mockRestore();
+         });
          const tool = await setupTool();
          const selectTimeouts: number[] = [];
-         const result = await tool.execute(
+         let answerLate!: (value: string) => void;
+         let secondOpened!: () => void;
+         const opened = new Promise<void>((resolve) => { secondOpened = resolve; });
+         const execution = tool.execute(
             "id",
             { questions: [{ question: "First?", options: ["A"] }, { question: "Second?", options: ["B"] }], timeout: 1000 },
             undefined,
@@ -3647,19 +3660,28 @@ describe("questions batch", () => {
                custom: async () => undefined,
                select: async (_title: string, choices: string[], opts: any) => {
                   selectTimeouts.push(opts?.timeout);
-                  now += elapsedDuringFirst;
-                  return choices[0];
+                  if (selectTimeouts.length === 1) {
+                     now = 600;
+                     return choices[0];
+                  }
+                  secondOpened();
+                  return new Promise((resolve) => {
+                     answerLate = resolve;
+                     if (honorsSignal) opts?.signal?.addEventListener("abort", () => resolve(undefined), { once: true });
+                  });
                },
             } },
          );
+         await opened;
+         // The second dialog shows the remaining 400ms, but one batch timer owns the deadline.
+         expect(selectTimeouts).toEqual([1000, 400]);
+         expect(timers.map((timer) => timer.ms)).toEqual([1000]);
+         timers[0]!.callback();
+         answerLate("B"); // only reaches the batch when the host ignores the signal
+         const result = await execution;
 
-         if (elapsedDuringFirst < 1000) {
-            expect(selectTimeouts).toEqual([1000, 400]);
-            expect(result.details.cancelled).toBe(false);
-         } else {
-            expect(selectTimeouts).toEqual([1000]);
-            expect(result.details.cancelled).toBe(true);
-         }
+         expect(result.details).toMatchObject({ kind: "batch", answers: [], cancelled: true });
+         expect(emittedEvents.some((event) => event.name === "ask:answered")).toBe(false);
       });
    }
 
