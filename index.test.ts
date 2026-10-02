@@ -3668,33 +3668,44 @@ describe("questions batch", () => {
       ]);
    });
 
-   test("keeps the review footer visible and scrolls the answers on a short overlay", async () => {
-      const tool = await setupTool();
-      const { state, custom } = mountBatchPrompt(12);
-      const execution = tool.execute(
-         "id",
-         { questions: ["First?", "Second?", "Third?", "Fourth?"].map((question) => ({ question, options: ["A"] })) },
-         undefined,
-         undefined,
-         { hasUI: true, ui: { custom } },
-      );
-      const prompt = state.component;
-      press(prompt, "enter", "enter", "enter", "enter"); // all answered, now on the review page
-      const top = prompt.render(60);
-      expect(top.length).toBeLessThanOrEqual(10); // overlay cap for a 12-row terminal
-      expect(top.join("\n")).toContain("↓ more");
-      expect(top.join("\n")).not.toContain("4. Fourth?");
-      expect(top.join("\n")).toContain("submit");
+   // Overlay: the 80x8 case where markers used to hide every answer. Inline:
+   // Pi's fullscreen dock clips inline prompts, so the review must stay short.
+   for (const { displayMode, rows, cap } of [
+      { displayMode: "overlay", rows: 8, cap: 6 },
+      // Two answer rows: overflow markers must not cover them.
+      { displayMode: "overlay", rows: 7, cap: 5 },
+      { displayMode: "inline", rows: 12, cap: 7 },
+   ]) {
+      test(`every answer stays reachable and the hints stay visible on a short ${displayMode} review`, async () => {
+         const tool = await setupTool();
+         const { state, custom } = mountBatchPrompt(rows);
+         const questions = ["First?", "Second?", "Third?", "Fourth?"];
+         const execution = tool.execute(
+            "id",
+            { questions: questions.map((question) => ({ question, options: [`Answer ${question}`] })), displayMode },
+            undefined,
+            undefined,
+            { hasUI: true, ui: { custom } },
+         );
+         const prompt = state.component;
+         press(prompt, "enter", "enter", "enter", "enter"); // all answered, now on the review page
+         const seen = new Set<string>();
+         for (let step = 0; step < 12; step++) {
+            const frame = prompt.render(80);
+            expect(frame.length).toBeLessThanOrEqual(cap);
+            expect(frame.join("\n")).toContain("submit");
+            for (const question of questions) {
+               if (frame.some((line: string) => line.includes(`. ${question}`))) seen.add(question);
+               if (frame.some((line: string) => line.includes(`→ Answer ${question}`))) seen.add(`→ ${question}`);
+            }
+            press(prompt, "down");
+         }
+         expect([...seen].sort()).toEqual([...questions, ...questions.map((question) => `→ ${question}`)].sort());
 
-      press(prompt, ...Array(10).fill("down"));
-      const bottom = prompt.render(60).join("\n");
-      expect(bottom).toContain("4. Fourth?");
-      expect(bottom).toContain("↑ more");
-      expect(bottom).toContain("submit");
-
-      press(prompt, "enter");
-      expect((await execution).details.cancelled).toBe(false);
-   });
+         press(prompt, "enter");
+         expect((await execution).details.cancelled).toBe(false);
+      });
+   }
 
    for (const outcome of ["esc on a page", "esc on the review page", "abort after the first answer", "timeout", "already aborted"] as const) {
       test(`publishes no answers when the batch ends by ${outcome}`, async () => {

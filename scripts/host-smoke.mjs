@@ -161,6 +161,46 @@ for (const title of ["Alpha", "日本語 😀 café"]) {
    });
    assert.deepEqual(rendered.details.response, { kind: "selection", selections: [title] });
 }
+// Short reviews: every answer must be reachable by scrolling, within the height
+// cap and the width, with real wrapping. Inline matches Pi's fullscreen dock.
+const longQuestion = (n) => `Question ${n}: which of these fairly long options should the service use?`;
+for (const { displayMode, width, rows, cap } of [
+   { displayMode: "overlay", width: 80, rows: 8, cap: 6 },
+   { displayMode: "inline", width: 40, rows: 12, cap: 7 },
+]) {
+   await tool.execute("smoke-batch-short", {
+      questions: [1, 2, 3, 4].map((n) => ({ question: longQuestion(n), options: [{ title: `Answer ${n}` }] })),
+      allowComment: false,
+      displayMode,
+   }, undefined, undefined, {
+      hasUI: true,
+      ui: {
+         custom: async (factory) => {
+            let response;
+            const component = factory(
+               { requestRender() {}, terminal: { rows } },
+               theme, getKeybindings(), (value) => { response = value; },
+            );
+            for (let n = 0; n < 4; n++) component.handleInput("\r");
+            const seen = new Set();
+            for (let step = 0; step < 30; step++) {
+               const lines = component.render(width);
+               assert.ok(lines.length <= cap, `${displayMode} review exceeds ${cap} rows`);
+               assert.ok(lines.some((line) => line.includes("submit")), `${displayMode} review hides its hints`);
+               for (const line of lines) {
+                  assert.ok(visibleWidth(line) <= width, `${displayMode} review line exceeds ${width} columns`);
+                  const answer = line.match(/Answer [1-4]/);
+                  if (answer) seen.add(answer[0]);
+               }
+               component.handleInput("\x1b[B");
+            }
+            assert.deepEqual([...seen].sort(), ["Answer 1", "Answer 2", "Answer 3", "Answer 4"]);
+            component.handleInput("\r");
+            return response;
+         },
+      },
+   });
+}
 // The batch prompt: its pages (strip in the frame title) and review page must fit
 // the width with the host's real wrapping, in both display modes.
 for (const displayMode of ["inline", "overlay"]) {
@@ -193,6 +233,10 @@ for (const displayMode of ["inline", "overlay"]) {
             component.handleInput("\r");
             assertFits("review");
             assert.ok(component.render(80).some((line) => line.includes("Review answers")));
+            // Kitty's keyboard protocol sends "1" as CSI-u; it must still jump back to question 1.
+            component.handleInput("\x1b[49;1u");
+            assert.ok(!component.render(80).some((line) => line.includes("Review answers")), "CSI-u digit must open question 1");
+            component.handleInput("\r");
             component.handleInput("\r");
             return response;
          },

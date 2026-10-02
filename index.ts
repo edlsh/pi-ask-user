@@ -2029,6 +2029,12 @@ class AskComponent extends Container {
    }
 }
 
+// Rows Pi's fullscreen layout keeps outside the input dock: the transcript's
+// minimum row, the working status, and up to three footer rows.
+const INLINE_DOCK_RESERVED_ROWS = 5;
+// Answer rows the review page keeps before squeezing its footer.
+const REVIEW_MIN_CONTENT_ROWS = 3;
+
 /** Frame body lines in the ask_user box with the given title. */
 function frameBox(theme: Theme, title: string, bodyLines: string[], width: number): string[] {
    const innerWidth = Math.max(1, width - BOX_BORDER_OVERHEAD);
@@ -2181,12 +2187,14 @@ class BatchAskComponent implements Component {
             response ? { status: "answered", response } : { status: "skipped" }));
          return;
       }
-      const jump = Number.parseInt(data, 10);
-      if (data.length === 1 && jump >= 1 && jump <= this.questions.length) {
+      // Kitty's keyboard protocol can deliver digits as CSI-u sequences.
+      const key = decodeKittyPrintable(data) ?? data;
+      const jump = key.length === 1 ? Number.parseInt(key, 10) : Number.NaN;
+      if (jump >= 1 && jump <= this.questions.length) {
          this.goTo(jump - 1);
          return;
       }
-      const pageRows = Math.max(1, getOverlayMaxRenderLinesForRows(this.tui.terminal.rows) - 4);
+      const pageRows = Math.max(1, this.reviewLineCap() - 4);
       const scrollBy = matchesSelectUp(data, this.keybindings) ? -1
          : matchesSelectDown(data, this.keybindings) ? 1
             : matchesKey(data, PROMPT_SCROLL_PAGE_UP_KEY) ? -pageRows
@@ -2226,33 +2234,48 @@ class BatchAskComponent implements Component {
             : null,
          keybindingHint(theme, this.keybindings, "tui.select.cancel", "cancel"),
       ].filter((hint): hint is string => !!hint).join(" • ");
-      const footerLines = [
-         "",
-         ...(this.confirmingSkips
-            ? wrap(theme.fg("warning", `${unanswered} unanswered — press ${formatKeyList(this.keybindings.getKeys("tui.select.confirm"))} again to submit with skips`))
-            : []),
-         ...wrap(theme.fg("dim", hints)),
-      ];
+      const warningText = this.confirmingSkips
+         ? theme.fg("warning", `${unanswered} unanswered — press ${formatKeyList(this.keybindings.getKeys("tui.select.confirm"))} again to submit with skips`)
+         : undefined;
+      const hintText = theme.fg("dim", hints);
+      const bodyCapacity = Math.max(1, this.reviewLineCap() - 2);
+      let footerLines = ["", ...(warningText ? wrap(warningText) : []), ...wrap(hintText)];
+      // On very short prompts keep room for answers: drop the spacer and keep
+      // the warning and hints to one line each (frameBox truncates them).
+      if (bodyCapacity - footerLines.length < REVIEW_MIN_CONTENT_ROWS) {
+         footerLines = [...(warningText ? [warningText] : []), hintText];
+      }
 
-      // Inline prompts grow with their content; overlays are capped, so the
-      // answers scroll while the footer stays visible.
-      let visibleContent = contentLines;
-      if (this.settings.displayMode === "overlay") {
-         const bodyCapacity = Math.max(1, getOverlayMaxRenderLinesForRows(this.tui.terminal.rows) - 2);
-         const contentBudget = Math.max(1, bodyCapacity - footerLines.length);
-         this.reviewMaxScrollOffset = Math.max(0, contentLines.length - contentBudget);
-         this.reviewScrollOffset = Math.min(this.reviewScrollOffset, this.reviewMaxScrollOffset);
-         visibleContent = contentLines.slice(this.reviewScrollOffset, this.reviewScrollOffset + contentBudget);
-         if (this.reviewScrollOffset > 0) {
-            visibleContent[0] = theme.fg("dim", "↑ more");
-         }
-         if (this.reviewScrollOffset < this.reviewMaxScrollOffset) {
-            visibleContent[visibleContent.length - 1] = theme.fg("dim", "↓ more");
-         }
+      // The answers scroll inside the cap while the footer stays visible.
+      const contentBudget = Math.max(1, bodyCapacity - footerLines.length);
+      this.reviewMaxScrollOffset = Math.max(0, contentLines.length - contentBudget);
+      this.reviewScrollOffset = Math.min(this.reviewScrollOffset, this.reviewMaxScrollOffset);
+      const visibleContent = contentLines.slice(this.reviewScrollOffset, this.reviewScrollOffset + contentBudget);
+      const hiddenAbove = this.reviewScrollOffset > 0;
+      const hiddenBelow = this.reviewScrollOffset < this.reviewMaxScrollOffset;
+      // Mark overflow in front of the first and last visible rows instead of
+      // replacing them, so even a one-row viewport still shows an answer.
+      const marker = (symbol: string, line: string) => `${theme.fg("dim", symbol)} ${line}`;
+      const last = visibleContent.length - 1;
+      if (hiddenAbove && hiddenBelow && last === 0) {
+         visibleContent[0] = marker("↕", visibleContent[0]!);
       } else {
-         this.reviewMaxScrollOffset = 0;
+         if (hiddenAbove) visibleContent[0] = marker("↑", visibleContent[0]!);
+         if (hiddenBelow) visibleContent[last] = marker("↓", visibleContent[last]!);
       }
       return frameBox(theme, this.title, [...visibleContent, ...footerLines], width);
+   }
+
+   /** Rows the review page may use, borders included. */
+   private reviewLineCap(): number {
+      const rows = Number.isFinite(this.tui.terminal.rows) ? Math.floor(this.tui.terminal.rows) : 24;
+      const overlayCap = getOverlayMaxRenderLinesForRows(rows);
+      if (this.settings.displayMode === "overlay") return overlayCap;
+      // Inline prompts sit in Pi's fullscreen input dock, which clips anything
+      // taller than what remains after the transcript's minimum row, the
+      // working status, and the 2-3 row footer. Components only learn their
+      // width, so stay within that space instead of growing with the content.
+      return Math.max(4, Math.min(overlayCap, rows - INLINE_DOCK_RESERVED_ROWS));
    }
 }
 
