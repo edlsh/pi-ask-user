@@ -2874,22 +2874,6 @@ describe("ask_user", () => {
          expect(error.message).toContain("{ \"title\": \"Short label\", \"description\": \"Optional detail\" }");
          expect(calls).toBe(0);
       });
-
-      test("keeps the registered options schema flat without union combinators", async () => {
-         const source = await Bun.file("index.ts").text();
-         const start = source.indexOf("options: Type.Optional(");
-         const end = source.indexOf("allowMultiple: Type.Optional(", start);
-         const optionSchema = source.slice(start, end);
-
-         expect(start).toBeGreaterThanOrEqual(0);
-         expect(end).toBeGreaterThan(start);
-         expect(optionSchema).toContain("Type.Array(");
-         expect(optionSchema).toContain("Type.Object({");
-         expect(optionSchema).toContain("title: Type.String");
-         expect(optionSchema).not.toContain("Type.Union");
-         expect(optionSchema).not.toContain("anyOf");
-         expect(optionSchema).not.toContain("oneOf");
-      });
    });
 
    describe("issue #38 typebox shim compatibility", () => {
@@ -3446,4 +3430,281 @@ describe("cancellation correctness", () => {
          expect(emittedEvents.filter((event) => event.name === "herdr:blocked").at(-1)?.payload).toEqual({ active: false });
       });
    }
+});
+
+describe("questions batch", () => {
+   type Ui = Record<string, (...args: any[]) => Promise<unknown>>;
+
+   function countingUi(calls: { count: number }): Ui {
+      const open = async () => {
+         calls.count++;
+         return undefined;
+      };
+      return { custom: open, select: open, input: open };
+   }
+
+   // Answers each custom prompt with the next key in `keys` (enter once they run out).
+   function pressInCustomPrompt(keys: string[], rendered: string[] = []) {
+      return async (factory: any) => await new Promise((resolve) => {
+         const component = factory(
+            { requestRender() { }, terminal: { rows: 24 } },
+            createTheme(),
+            createKeybindings(),
+            resolve,
+         );
+         rendered.push(component.render(100).join("\n"));
+         component.handleInput(keys.shift() ?? "enter");
+      });
+   }
+
+   const twoQuestions = [{ question: "First?" }, { question: "Second?" }];
+   const validationCases: Array<{ name: string; params: Record<string, unknown>; expected: string[]; noUI?: boolean }> = [
+      { name: "neither question nor questions", params: {}, expected: ["needs question"] },
+      { name: "both question and questions", params: { question: "Q?", questions: twoQuestions }, expected: ["exactly one of question or questions"] },
+      { name: "a single entry", params: { questions: [{ question: "Only?" }] }, expected: ["got 1", "use question instead"] },
+      { name: "five entries", params: { questions: ["A?", "B?", "C?", "D?", "E?"].map((question) => ({ question })) }, expected: ["at most 4"] },
+      { name: "a non-array questions value", params: { questions: "First?" }, expected: ["must be an array"] },
+      { name: "a blank question", params: { questions: [{ question: "  " }, { question: "Second?" }] }, expected: ["questions[0].question must be a non-empty string"] },
+      { name: "a duplicate question", params: { questions: [{ question: "Same?" }, { question: "same?" }] }, expected: ["questions[1] repeats the question"] },
+      {
+         name: "an entry whose options are all malformed",
+         params: { questions: [{ question: "First?" }, { question: "Second?", options: [{}, "  "] }] },
+         expected: ["in questions[1] were malformed", "{ \"title\": \"Short label\""],
+      },
+      {
+         name: "single-question fields at the top level",
+         params: { context: "shared", options: ["A"], questions: twoQuestions },
+         expected: ["context, options cannot be set at the top level"],
+      },
+      {
+         name: "no interactive UI",
+         params: { questions: [{ question: "First?", context: "Why it matters", options: ["Yes", "No"] }, { question: "Second?" }] },
+         expected: ["requires interactive mode", "1. First?", "Context: Why it matters", "   1. Yes", "   2. No", "2. Second?"],
+         noUI: true,
+      },
+   ];
+
+   for (const { name, params, expected, noUI } of validationCases) {
+      test(`throws before any UI or event for ${name}`, async () => {
+         const tool = await setupTool();
+         const calls = { count: 0 };
+         const error = await rejectedError(tool.execute(
+            "id", params, undefined, undefined,
+            noUI ? { hasUI: false } : { hasUI: true, ui: countingUi(calls) },
+         ));
+         for (const fragment of expected) expect(error.message).toContain(fragment);
+         expect(calls.count).toBe(0);
+         expect(emittedEvents).toEqual([]);
+      });
+   }
+
+   test("asks each question in order and publishes the answers only after the last one", async () => {
+      stubEnv("PI_ASK_USER_EMIT_FULL_EVENTS", "false");
+      const tool = await setupTool();
+      const rendered: string[] = [];
+      const inputTitles: string[] = [];
+      const result = await tool.execute(
+         "id",
+         {
+            questions: [
+               { question: "Which database?", context: "private context", options: ["Postgres", "SQLite"] },
+               { question: "Anything else?" },
+            ],
+         },
+         undefined,
+         undefined,
+         { hasUI: true, ui: {
+            custom: pressInCustomPrompt(["enter"], rendered),
+            input: async (title: string) => {
+               inputTitles.push(title);
+               return "No";
+            },
+         } },
+      );
+
+      expect(rendered[0]).toContain("(1/2) Which database?");
+      expect(inputTitles).toEqual(["(2/2) Anything else?"]);
+      expect(result.details).toEqual({
+         kind: "batch",
+         questions: [
+            { question: "Which database?", context: "private context", options: [{ title: "Postgres" }, { title: "SQLite" }] },
+            { question: "Anything else?", options: [] },
+         ],
+         answers: [
+            { status: "answered", response: { kind: "selection", selections: ["Postgres"] } },
+            { status: "answered", response: { kind: "freeform", text: "No" } },
+         ],
+         cancelled: false,
+      });
+      expect(result.content).toEqual([{
+         type: "text",
+         text: "User answered 2 of 2 questions:\n1. Which database? → Postgres\n2. Anything else? → No",
+      }]);
+      expect(emittedEvents).toEqual([
+         { name: "herdr:blocked", payload: { active: true, label: "Waiting for user response" } },
+         { name: "herdr:blocked", payload: { active: false } },
+         { name: "ask:answered", payload: { question: "Which database?", response: { kind: "selection" }, batch: { index: 0, total: 2 } } },
+         { name: "ask:answered", payload: { question: "Anything else?", response: { kind: "freeform" }, batch: { index: 1, total: 2 } } },
+      ]);
+   });
+
+   test("falls back to dialogs per question with each entry's own selection mode", async () => {
+      const tool = await setupTool();
+      const selects: Array<{ title: string; choices: string[] }> = [];
+      const inputs: string[] = [];
+      const result = await tool.execute(
+         "id",
+         {
+            questions: [
+               { question: "Pick one", options: [{ label: "A" }, { label: "B" }], allowFreeform: false },
+               { question: "Pick many", options: ["X", "Y", "Z"], allowMultiple: true },
+            ],
+         },
+         undefined,
+         undefined,
+         { hasUI: true, ui: {
+            custom: async () => undefined,
+            select: async (title: string, choices: string[]) => {
+               selects.push({ title, choices });
+               return "B";
+            },
+            input: async (title: string) => {
+               inputs.push(title);
+               return "X, Z";
+            },
+         } },
+      );
+
+      expect(selects).toEqual([{ title: "(1/2) Pick one", choices: ["A", "B"] }]);
+      expect(inputs).toHaveLength(1);
+      expect(inputs[0]).toContain("(2/2) Pick many");
+      expect(inputs[0]).toContain("Options (select one or more)");
+      expect(result.details.answers).toEqual([
+         { status: "answered", response: { kind: "selection", selections: ["B"] } },
+         { status: "answered", response: { kind: "selection", selections: ["X", "Z"] } },
+      ]);
+   });
+
+   for (const outcome of ["escape on the second question", "abort after the first answer", "already aborted"] as const) {
+      test(`publishes no answers when the batch ends by ${outcome}`, async () => {
+         const tool = await setupTool();
+         const controller = new AbortController();
+         if (outcome === "already aborted") controller.abort();
+         let prompts = 0;
+         const result = await tool.execute(
+            "id",
+            { questions: [{ question: "First?", options: ["A"] }, { question: "Second?", options: ["B"] }] },
+            controller.signal,
+            undefined,
+            { hasUI: true, ui: {
+               custom: async (factory: any) => await new Promise((resolve) => {
+                  prompts++;
+                  const component = factory(
+                     { requestRender() { }, terminal: { rows: 24 } },
+                     createTheme(),
+                     createKeybindings(),
+                     resolve,
+                  );
+                  if (outcome === "escape on the second question" && prompts === 2) {
+                     component.handleInput("escape");
+                     return;
+                  }
+                  component.handleInput("enter");
+                  if (outcome === "abort after the first answer") controller.abort();
+               }),
+            } },
+         );
+
+         expect(result.details).toMatchObject({ kind: "batch", answers: [], cancelled: true });
+         expect(emittedEvents.some((event) => event.name === "ask:answered")).toBe(false);
+         if (outcome === "already aborted") {
+            expect(prompts).toBe(0);
+            expect(emittedEvents).toEqual([]);
+            return;
+         }
+         expect(prompts).toBe(outcome === "escape on the second question" ? 2 : 1);
+         expect(result.content).toEqual([{ type: "text", text: "User cancelled the questions" }]);
+         expect(emittedEvents.filter((event) => event.name.startsWith("ask:"))).toEqual([
+            { name: "ask:cancelled", payload: { question: "First?", batch: { index: 0, total: 2 } } },
+            { name: "ask:cancelled", payload: { question: "Second?", batch: { index: 1, total: 2 } } },
+         ]);
+      });
+   }
+
+   for (const elapsedDuringFirst of [600, 1000]) {
+      test(`shares one deadline across questions (${elapsedDuringFirst}ms of 1000ms spent on the first)`, async () => {
+         let now = 0;
+         const clock = spyOn(Date, "now").mockImplementation(() => now);
+         onTestFinished(() => clock.mockRestore());
+         const tool = await setupTool();
+         const selectTimeouts: number[] = [];
+         const result = await tool.execute(
+            "id",
+            { questions: [{ question: "First?", options: ["A"] }, { question: "Second?", options: ["B"] }], timeout: 1000 },
+            undefined,
+            undefined,
+            { hasUI: true, ui: {
+               custom: async () => undefined,
+               select: async (_title: string, choices: string[], opts: any) => {
+                  selectTimeouts.push(opts?.timeout);
+                  now += elapsedDuringFirst;
+                  return choices[0];
+               },
+            } },
+         );
+
+         if (elapsedDuringFirst < 1000) {
+            expect(selectTimeouts).toEqual([1000, 400]);
+            expect(result.details.cancelled).toBe(false);
+         } else {
+            expect(selectTimeouts).toEqual([1000]);
+            expect(result.details.cancelled).toBe(true);
+         }
+      });
+   }
+
+   test("renders batch calls and results without falling back to the single-question renderer", async () => {
+      const tool = await setupTool();
+      const theme = createTheme();
+      const call = (tool as any).renderCall(
+         { questions: [{ question: "Which database?", options: ["Postgres", "SQLite"] }, { question: "Anything else?" }] },
+         theme,
+      ).render(200).join("\n");
+      expect(call).toContain("2 questions");
+      expect(call).toContain("1. Which database? (2 option(s))");
+      expect(call).toContain("2. Anything else?");
+
+      const details = {
+         kind: "batch",
+         questions: [
+            { question: "Which database?", context: "private context", options: [{ title: "Postgres" }, { title: "SQLite" }] },
+            { question: "Anything else?", options: [] },
+         ],
+         answers: [
+            { status: "answered", response: { kind: "selection", selections: ["Postgres"] } },
+            { status: "answered", response: { kind: "freeform", text: "No" } },
+         ],
+         cancelled: false,
+      };
+      const render = (renderDetails: unknown, expanded: boolean, context?: unknown) => tool.renderResult(
+         { content: [{ type: "text", text: "boom" }], details: renderDetails },
+         { expanded, isPartial: false },
+         theme,
+         context,
+      ).render(200).join("\n");
+
+      const collapsed = render(details, false);
+      expect(collapsed).toContain("✓ 2 of 2 answered");
+      expect(collapsed).toContain("1. Which database? → Postgres");
+      expect(collapsed).toContain("2. Anything else? → (wrote) No");
+      expect(collapsed).not.toContain("private context");
+
+      const expanded = render(details, true);
+      expect(expanded).toContain("private context");
+      expect(expanded).toContain("● Postgres");
+      expect(expanded).toContain("○ SQLite");
+
+      expect(render({ ...details, answers: [], cancelled: true }, false)).toBe("Cancelled");
+      expect(render(details, false, { isError: true })).toBe("✗ boom");
+   });
 });

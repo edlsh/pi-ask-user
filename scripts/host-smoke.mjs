@@ -16,10 +16,39 @@ const tool = tools.get("ask_user").definition;
 assert.equal(tool.name, "ask_user");
 assert.equal(tool.executionMode, "sequential");
 assert.equal(tool.parameters.type, "object");
-assert.deepEqual(tool.parameters.required, ["question"]);
+// Every top-level field is optional: a call carries either question or questions.
+assert.deepEqual(tool.parameters.required ?? [], []);
 assert.equal(tool.parameters.properties.question.type, "string");
-assert.equal(tool.parameters.properties.options.items.type, "object");
-assert.deepEqual(tool.parameters.properties.options.items.required, ["title"]);
+const batchSchema = tool.parameters.properties.questions;
+assert.equal(batchSchema.type, "array");
+assert.equal(batchSchema.minItems, 2);
+assert.equal(batchSchema.maxItems, 4);
+assert.equal(batchSchema.items.type, "object");
+assert.deepEqual(batchSchema.items.required, ["question"]);
+for (const optionList of [tool.parameters.properties.options, batchSchema.items.properties.options]) {
+   assert.equal(optionList.type, "array");
+   assert.equal(optionList.items.type, "object");
+   assert.deepEqual(optionList.items.required, ["title"]);
+}
+// Union combinators get stripped or rejected by several providers/proxies (Google
+// function calling, Codex-style backends, cmux), so the whole schema stays flat (#22).
+assert.doesNotMatch(JSON.stringify(tool.parameters), /"(anyOf|oneOf|allOf)"/);
+// The unit tests mock TypeBox, so the nested questions schema meets a real validator only here.
+const aiPackage = pathToFileURL(findPackageJSON("@earendil-works/pi-ai", hostEntry));
+const { validateToolArguments } = await import(new URL("./dist/utils/validation.js", aiPackage));
+const validate = (args) => validateToolArguments(tool, { id: "smoke-validate", name: tool.name, arguments: args });
+assert.doesNotThrow(() => validate({
+   questions: [
+      { question: "Ship it?", options: [{ title: "Yes" }, { title: "No", description: "Wait for review" }] },
+      { question: "Notes?", allowFreeform: true },
+   ],
+   timeout: 60000,
+}));
+assert.throws(() => validate({ questions: [{ question: "Only one?" }] }), "questions needs at least 2 entries");
+assert.throws(
+   () => validate({ questions: ["A?", "B?", "C?", "D?", "E?"].map((question) => ({ question })) }),
+   "questions accepts at most 4 entries",
+);
 for (const [name, values] of Object.entries({
    displayMode: ["overlay", "inline"],
    singleSelectLayout: ["auto", "list"],
@@ -132,4 +161,4 @@ for (const title of ["Alpha", "日本語 😀 café"]) {
    });
    assert.deepEqual(rendered.details.response, { kind: "selection", selections: [title] });
 }
-console.log("Host smoke passed: registration, schema, RPC select, redacted event, thrown errors, error rendering, native TUI.");
+console.log("Host smoke passed: registration, schema, batch schema validation, RPC select, redacted event, thrown errors, error rendering, native TUI.");
