@@ -5,7 +5,7 @@
  * and a custom box border instead of manual ANSI box drawing.
  */
 
-import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent";
 import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { Type, type TUnsafe } from "@sinclair/typebox";
 import {
@@ -2027,6 +2027,151 @@ async function askViaDialogs(
    return createSelectionResponse([selected], comment);
 }
 
+interface PromptSettings {
+   displayMode: AskDisplayMode;
+   singleSelectLayout: AskSingleSelectLayout;
+   allowComment: boolean;
+   contextExpanded: boolean;
+   shortcuts: ResolvedAskShortcuts;
+}
+
+/** Resolve presentation preferences: call parameter, then env var, then built-in default. */
+function resolvePromptSettings(params: AskParams): PromptSettings {
+   const envMode = process.env.PI_ASK_USER_DISPLAY_MODE?.trim().toLowerCase();
+   const envDisplayMode: AskDisplayMode | undefined =
+      envMode === "overlay" || envMode === "inline" ? envMode : undefined;
+   const envSingleSelectLayout = process.env.PI_ASK_USER_SINGLE_SELECT_LAYOUT?.trim().toLowerCase();
+   return {
+      displayMode: params.displayMode ?? envDisplayMode ?? "overlay",
+      singleSelectLayout: params.singleSelectLayout ?? (envSingleSelectLayout === "list" ? "list" : "auto"),
+      allowComment: params.allowComment
+         ?? parseBooleanPreference(process.env.PI_ASK_USER_ALLOW_COMMENT)
+         ?? false,
+      contextExpanded: params.contextExpanded
+         ?? parseBooleanPreference(process.env.PI_ASK_USER_CONTEXT_EXPANDED)
+         ?? false,
+      shortcuts: {
+         overlayToggle: resolveShortcut(
+            params.overlayToggleKey,
+            process.env.PI_ASK_USER_OVERLAY_TOGGLE_KEY,
+            DEFAULT_OVERLAY_TOGGLE_KEY,
+         ),
+         commentToggle: resolveShortcut(
+            params.commentToggleKey,
+            process.env.PI_ASK_USER_COMMENT_TOGGLE_KEY,
+            DEFAULT_COMMENT_TOGGLE_KEY,
+         ),
+      },
+   };
+}
+
+/** Report the session as blocked on the user (`herdr:blocked`) for the duration of `run`. */
+async function whileBlocked<T>(pi: ExtensionAPI, run: () => Promise<T>): Promise<T> {
+   pi.events.emit("herdr:blocked", { active: true, label: "Waiting for user response" });
+   try {
+      return await run();
+   } finally {
+      pi.events.emit("herdr:blocked", { active: false });
+   }
+}
+
+interface CustomPromptRequest<T> {
+   signal?: AbortSignal;
+   timeout?: number;
+   displayMode: AskDisplayMode;
+   overlayToggle: ResolvedShortcut;
+   createComponent: (
+      tui: TUI,
+      theme: Theme,
+      keybindings: KeybindingsManager,
+      complete: (value: T | null) => void,
+   ) => Component;
+   /** RPC/headless mode: ctx.ui.custom() returns undefined, so degrade to the select()/input() dialogs. */
+   fallback: () => Promise<T | null>;
+}
+
+/**
+ * Show one custom-UI prompt and own every resource it needs: the abort
+ * listener, the timeout timer, and the overlay-toggle terminal listener.
+ * Completion is guarded so a late timer, abort, or keypress cannot resolve
+ * twice, and every resource is released however the prompt ends.
+ */
+async function runCustomPrompt<T>(ui: ExtensionUIContext, request: CustomPromptRequest<T>): Promise<T | null> {
+   const { signal, timeout, displayMode, overlayToggle } = request;
+   let overlayHandle: OverlayHandle | undefined;
+   let removeOverlayInputListener: (() => void) | undefined;
+   let customTimer: ReturnType<typeof setTimeout> | undefined;
+   let onCustomAbort: (() => void) | undefined;
+   let customCompleted = false;
+   let hasAnnouncedHide = false;
+   try {
+      const customFactory = (tui: TUI, theme: Theme, keybindings: KeybindingsManager, done: (result: T | null) => void) => {
+         const complete = (value: T | null) => {
+            if (customCompleted) return;
+            customCompleted = true;
+            done(signal?.aborted ? null : value);
+         };
+         if (signal) {
+            onCustomAbort = () => complete(null);
+            signal.addEventListener("abort", onCustomAbort, { once: true });
+         }
+
+         if (signal?.aborted) {
+            complete(null);
+         } else if (timeout && timeout > 0) {
+            customTimer = setTimeout(() => complete(null), timeout);
+         }
+
+         return request.createComponent(tui, theme, keybindings, complete);
+      };
+
+      // Register a raw terminal input listener for the overlay-toggle key so the
+      // overlay can be toggled even while it is hidden (hidden overlays do not
+      // receive input). Inline mode does not need this because the prompt is
+      // already non-modal. Skipped entirely if the user disabled the shortcut.
+      if (
+         displayMode === "overlay"
+         && !overlayToggle.disabled
+         && typeof ui.onTerminalInput === "function"
+      ) {
+         removeOverlayInputListener = ui.onTerminalInput((data) => {
+            if (!overlayToggle.matches(data) || !overlayHandle) return undefined;
+            // Kitty's progressive keyboard protocol reports press, repeat,
+            // and release as separate events. Toggle only on the initial
+            // press; otherwise one physical keypress can immediately hide
+            // and re-show the overlay. Still consume repeat/release events
+            // so they do not reach the component focused behind it.
+            if (isKeyRepeat(data) || isKeyRelease(data)) return { consume: true };
+            const nextHidden = !overlayHandle.isHidden();
+            overlayHandle.setHidden(nextHidden);
+            if (nextHidden && !hasAnnouncedHide) {
+               hasAnnouncedHide = true;
+               ui.notify?.(`ask_user hidden — press ${overlayToggle.spec} to reopen`, "info");
+            }
+            return { consume: true };
+         });
+      }
+
+      const customResult = signal?.aborted ? null : await ui.custom<T | null>(
+         customFactory,
+         buildCustomUIOptions(displayMode, (handle) => {
+            overlayHandle = handle;
+         }),
+      );
+
+      if (signal?.aborted) return null;
+      if (customResult !== undefined) return customResult;
+      return await request.fallback();
+   } catch (error) {
+      throw error instanceof Error ? error : new Error(String(error));
+   } finally {
+      customCompleted = true;
+      if (customTimer !== undefined) clearTimeout(customTimer);
+      if (onCustomAbort) signal?.removeEventListener("abort", onCustomAbort);
+      removeOverlayInputListener?.();
+   }
+}
+
 export default function(pi: ExtensionAPI) {
    pi.registerTool({
       name: "ask_user",
@@ -2123,39 +2268,10 @@ export default function(pi: ExtensionAPI) {
             options: rawOptions = [],
             allowMultiple = false,
             allowFreeform = true,
-            allowComment: requestedAllowComment,
-            displayMode,
-            singleSelectLayout,
-            contextExpanded: requestedContextExpanded,
-            overlayToggleKey,
-            commentToggleKey,
             timeout,
          } = params as AskParams;
-         const envMode = process.env.PI_ASK_USER_DISPLAY_MODE?.trim().toLowerCase();
-         const envDisplayMode: AskDisplayMode | undefined =
-            envMode === "overlay" || envMode === "inline" ? envMode : undefined;
-         const effectiveDisplayMode: AskDisplayMode = displayMode ?? envDisplayMode ?? "overlay";
-         const envSingleSelectLayout = process.env.PI_ASK_USER_SINGLE_SELECT_LAYOUT?.trim().toLowerCase();
-         const effectiveSingleSelectLayout: AskSingleSelectLayout = singleSelectLayout
-            ?? (envSingleSelectLayout === "list" ? "list" : "auto");
-         const allowComment = requestedAllowComment
-            ?? parseBooleanPreference(process.env.PI_ASK_USER_ALLOW_COMMENT)
-            ?? false;
-         const contextExpanded = requestedContextExpanded
-            ?? parseBooleanPreference(process.env.PI_ASK_USER_CONTEXT_EXPANDED)
-            ?? false;
-         const shortcuts: ResolvedAskShortcuts = {
-            overlayToggle: resolveShortcut(
-               overlayToggleKey,
-               process.env.PI_ASK_USER_OVERLAY_TOGGLE_KEY,
-               DEFAULT_OVERLAY_TOGGLE_KEY,
-            ),
-            commentToggle: resolveShortcut(
-               commentToggleKey,
-               process.env.PI_ASK_USER_COMMENT_TOGGLE_KEY,
-               DEFAULT_COMMENT_TOGGLE_KEY,
-            ),
-         };
+         const settings = resolvePromptSettings(params as AskParams);
+         const { allowComment } = settings;
          const options = rawOptions.map(coerceOption).filter((option): option is QuestionOption => option !== null);
          const normalizedContext = context?.trim() || undefined;
          const dialogOpts = signal
@@ -2198,13 +2314,7 @@ export default function(pi: ExtensionAPI) {
 
          if (options.length === 0) {
             const prompt = normalizedContext ? `${question}\n\nContext:\n${normalizedContext}` : question;
-            pi.events.emit("herdr:blocked", { active: true, label: "Waiting for user response" });
-            let answer: string | undefined;
-            try {
-               answer = await ctx.ui.input(prompt, "Type your answer...", dialogOpts);
-            } finally {
-               pi.events.emit("herdr:blocked", { active: false });
-            }
+            const answer = await whileBlocked(pi, () => ctx.ui.input(prompt, "Type your answer...", dialogOpts));
             const response = signal?.aborted ? null : createFreeformResponse(answer);
 
             if (!response) {
@@ -2227,111 +2337,38 @@ export default function(pi: ExtensionAPI) {
             details: { question, context: normalizedContext, options, response: null, cancelled: false },
          });
 
-         let result: AskUIResult | null;
-         let overlayHandle: OverlayHandle | undefined;
-         let removeOverlayInputListener: (() => void) | undefined;
-         let customTimer: ReturnType<typeof setTimeout> | undefined;
-         let onCustomAbort: (() => void) | undefined;
-         let customCompleted = false;
-         let hasAnnouncedHide = false;
-         pi.events.emit("herdr:blocked", { active: true, label: "Waiting for user response" });
-         try {
-            const customFactory = (tui: TUI, theme: Theme, keybindings: KeybindingsManager, done: (result: AskUIResult | null) => void) => {
-               const complete = (value: AskUIResult | null) => {
-                  if (customCompleted) return;
-                  customCompleted = true;
-                  done(signal?.aborted ? null : value);
-               };
-               if (signal) {
-                  onCustomAbort = () => complete(null);
-                  signal.addEventListener("abort", onCustomAbort, { once: true });
-               }
-
-               if (signal?.aborted) {
-                  complete(null);
-               } else if (timeout && timeout > 0) {
-                  customTimer = setTimeout(() => complete(null), timeout);
-               }
-
-               return new AskComponent(
-                  question,
-                  normalizedContext,
-                  options,
-                  allowMultiple,
-                  allowFreeform,
-                  allowComment,
-                  effectiveDisplayMode,
-                  effectiveSingleSelectLayout,
-                  contextExpanded,
-                  tui,
-                  theme,
-                  keybindings,
-                  shortcuts,
-                  complete,
-               );
-            };
-
-            // Register a raw terminal input listener for the overlay-toggle key so the
-            // overlay can be toggled even while it is hidden (hidden overlays do not
-            // receive input). Inline mode does not need this because the prompt is
-            // already non-modal. Skipped entirely if the user disabled the shortcut.
-            const overlayToggle = shortcuts.overlayToggle;
-            if (
-               effectiveDisplayMode === "overlay"
-               && !overlayToggle.disabled
-               && typeof ctx.ui.onTerminalInput === "function"
-            ) {
-               removeOverlayInputListener = ctx.ui.onTerminalInput((data) => {
-                  if (!overlayToggle.matches(data) || !overlayHandle) return undefined;
-                  // Kitty's progressive keyboard protocol reports press, repeat,
-                  // and release as separate events. Toggle only on the initial
-                  // press; otherwise one physical keypress can immediately hide
-                  // and re-show the overlay. Still consume repeat/release events
-                  // so they do not reach the component focused behind it.
-                  if (isKeyRepeat(data) || isKeyRelease(data)) return { consume: true };
-                  const nextHidden = !overlayHandle.isHidden();
-                  overlayHandle.setHidden(nextHidden);
-                  if (nextHidden && !hasAnnouncedHide) {
-                     hasAnnouncedHide = true;
-                     ctx.ui.notify?.(`ask_user hidden — press ${overlayToggle.spec} to reopen`, "info");
-                  }
-                  return { consume: true };
-               });
-            }
-
-            const customResult = signal?.aborted ? null : await ctx.ui.custom<AskUIResult | null>(
-               customFactory,
-               buildCustomUIOptions(effectiveDisplayMode, (handle) => {
-                  overlayHandle = handle;
-               }),
-            );
-
-            if (signal?.aborted) {
-               result = null;
-            } else if (customResult !== undefined) {
-               result = customResult;
-            } else {
-               // RPC/headless mode: degrade to select()/input() dialog protocol
-               result = await askViaDialogs(
-                  ctx.ui,
-                  question,
-                  normalizedContext,
-                  options,
-                  allowMultiple,
-                  allowFreeform,
-                  allowComment,
-                  dialogOpts,
-               );
-            }
-         } catch (error) {
-            throw error instanceof Error ? error : new Error(String(error));
-         } finally {
-            customCompleted = true;
-            if (customTimer !== undefined) clearTimeout(customTimer);
-            if (onCustomAbort) signal?.removeEventListener("abort", onCustomAbort);
-            removeOverlayInputListener?.();
-            pi.events.emit("herdr:blocked", { active: false });
-         }
+         const result = await whileBlocked(pi, () => runCustomPrompt<AskUIResult>(ctx.ui, {
+            signal,
+            timeout,
+            displayMode: settings.displayMode,
+            overlayToggle: settings.shortcuts.overlayToggle,
+            createComponent: (tui, theme, keybindings, complete) => new AskComponent(
+               question,
+               normalizedContext,
+               options,
+               allowMultiple,
+               allowFreeform,
+               allowComment,
+               settings.displayMode,
+               settings.singleSelectLayout,
+               settings.contextExpanded,
+               tui,
+               theme,
+               keybindings,
+               settings.shortcuts,
+               complete,
+            ),
+            fallback: () => askViaDialogs(
+               ctx.ui,
+               question,
+               normalizedContext,
+               options,
+               allowMultiple,
+               allowFreeform,
+               allowComment,
+               dialogOpts,
+            ),
+         }));
 
          if (signal?.aborted || result === null) {
             emitCancelled();
