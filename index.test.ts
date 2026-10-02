@@ -3631,6 +3631,26 @@ describe("questions batch", () => {
       });
    }
 
+   test("an abort during the initial update cancels the batch before any prompt opens", async () => {
+      const tool = await setupTool();
+      const controller = new AbortController();
+      let prompts = 0;
+      const open = async () => {
+         prompts++;
+         return "answer";
+      };
+      const result = await tool.execute(
+         "id",
+         { questions: [{ question: "First?" }, { question: "Second?" }] },
+         controller.signal,
+         () => controller.abort(),
+         { hasUI: true, ui: { custom: open, select: open, input: open } },
+      );
+      expect(prompts).toBe(0);
+      expect(result.details).toMatchObject({ kind: "batch", answers: [], cancelled: true });
+      expect(emittedEvents.some((event) => event.name === "ask:answered")).toBe(false);
+   });
+
    for (const honorsSignal of [true, false]) {
       test(`the batch deadline closes an open dialog and rejects a late answer (host ${honorsSignal ? "honors" : "ignores"} the signal)`, async () => {
          let now = 0;

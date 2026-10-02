@@ -2474,6 +2474,8 @@ async function executeBatch(
    const batch = new AbortController();
    const forwardAbort = () => batch.abort();
    signal?.addEventListener("abort", forwardAbort, { once: true });
+   // An abort that already fired (for example inside onUpdate above) is not replayed.
+   if (signal?.aborted) batch.abort();
    const deadlineTimer = deadline === undefined ? undefined : setTimeout(() => batch.abort(), params.timeout);
    let answers: BatchAnswer[] | null;
    try {
