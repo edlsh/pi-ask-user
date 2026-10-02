@@ -1334,6 +1334,12 @@ class AskComponent extends Container {
                modeBudget -= shiftedRows;
                promptBudget += shiftedRows;
             }
+
+            // Let overflowing choices use prompt capacity that would otherwise
+            // remain blank when the question and context are short.
+            const unusedPromptRows = Math.max(0, promptBudget - promptLines.length);
+            promptBudget -= unusedPromptRows;
+            modeBudget += unusedPromptRows;
          }
       } else {
          modeBudget = Math.min(this.getPreferredModeRows(), contentRows);
