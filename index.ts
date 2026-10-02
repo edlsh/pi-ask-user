@@ -178,7 +178,7 @@ interface BatchQuestion {
    allowFreeform: boolean;
 }
 
-type BatchAnswer = { status: "answered"; response: AskResponse };
+type BatchAnswer = { status: "answered"; response: AskResponse } | { status: "skipped" };
 
 /** Result details of a `questions` batch. Single-question results keep AskToolDetails. */
 interface AskBatchDetails {
@@ -1182,6 +1182,9 @@ class AskComponent extends Container {
    private promptViewportRows = 0;
    private contextIsCollapsible = false;
    private contextExpanded = false;
+   // A batch page shows its position in the frame title and a navigation hint.
+   private frameTitle = "ask_user";
+   private navigationHint: string | null = null;
 
    // Static layout components
    private titleText: Text;
@@ -1283,7 +1286,13 @@ class AskComponent extends Container {
       ));
 
       this.updateStaticText();
-      this.showSelectMode();
+      // Batch questions without options open straight in the editor, like
+      // the input dialog a single question without options uses.
+      if (this.options.length === 0) {
+         this.showFreeformMode();
+      } else {
+         this.showSelectMode();
+      }
    }
 
    override invalidate(): void {
@@ -1633,7 +1642,7 @@ class AskComponent extends Container {
    private renderTopBorder(width: number): string {
       return new BoxBorderTop(
          (s: string) => this.theme.fg("accent", s),
-         "ask_user",
+         this.frameTitle,
          (s: string) => this.theme.fg("dim", this.theme.bold(s)),
       ).render(width)[0] ?? "";
    }
@@ -1709,9 +1718,10 @@ class AskComponent extends Container {
             .getKeys("tui.select.cancel")
             .filter((key) => key !== "escape" && key !== "esc");
          const hints = [
+            this.navigationHint,
             keybindingHint(theme, this.keybindings, "tui.input.submit", this.mode === "comment" ? "submit/skip" : "submit"),
             keybindingHint(theme, this.keybindings, "tui.input.newLine", "newline"),
-            literalHint(theme, "esc", "back"),
+            literalHint(theme, "esc", this.options.length === 0 ? "cancel" : "back"),
             overlayHint,
             alternateCancelKeys.length > 0 ? literalHint(theme, formatKeyList(alternateCancelKeys), "cancel") : null,
          ]
@@ -1723,6 +1733,7 @@ class AskComponent extends Container {
 
       if (this.allowMultiple) {
          const hints = [
+            this.navigationHint,
             literalHint(theme, "↑↓", "navigate"),
             literalHint(theme, "space", "toggle"),
             commentHint,
@@ -1740,6 +1751,7 @@ class AskComponent extends Container {
             .getKeys("tui.select.cancel")
             .filter((key) => key !== "escape" && key !== "esc");
          const hints = [
+            this.navigationHint,
             literalHint(theme, "type", "filter"),
             commentHint,
             contextHint,
@@ -1757,6 +1769,13 @@ class AskComponent extends Container {
             .join(" • ");
          this.helpText.setText(theme.fg("dim", hints));
       }
+   }
+
+   /** Batch pages: show the question strip in the frame title and the page-navigation hint. */
+   setBatchChrome(frameTitle: string, navigationHint: string): void {
+      this.frameTitle = frameTitle;
+      this.navigationHint = navigationHint;
+      this.updateHelpText();
    }
 
    private ensureSingleSelectList(): WrappedSingleSelectList {
@@ -1980,6 +1999,11 @@ class AskComponent extends Container {
       }
       if (this.mode === "freeform" || this.mode === "comment") {
          if (matchesKey(data, Key.escape)) {
+            // Without options there is no list to go back to, so esc cancels.
+            if (this.options.length === 0) {
+               this.onDone(null);
+               return;
+            }
             this.showSelectMode();
             return;
          }
@@ -2002,6 +2026,233 @@ class AskComponent extends Container {
 
       this.ensureSingleSelectList().handleInput?.(data);
       this.tui.requestRender();
+   }
+}
+
+/** Frame body lines in the ask_user box with the given title. */
+function frameBox(theme: Theme, title: string, bodyLines: string[], width: number): string[] {
+   const innerWidth = Math.max(1, width - BOX_BORDER_OVERHEAD);
+   const borderColor = (s: string) => theme.fg("accent", s);
+   return [
+      new BoxBorderTop(borderColor, title, (s: string) => theme.fg("dim", theme.bold(s))).render(width)[0] ?? "",
+      ...bodyLines.map((line) => `${borderColor(BOX_BORDER_LEFT)}${truncateToWidth(line, innerWidth, "", true)}${borderColor(BOX_BORDER_RIGHT)}`),
+      new BoxBorderBottom(borderColor, `v${ASK_USER_VERSION}`, (s: string) => theme.fg("dim", s)).render(width)[0] ?? "",
+   ];
+}
+
+/**
+ * One prompt for a whole `questions` batch: a page per question plus a review
+ * page. Each page is an AskComponent that stays alive, so filters, drafts, and
+ * checkboxes survive moving between pages. Answers are recorded per page and
+ * only the review page submits; esc that would cancel a page cancels the batch.
+ */
+class BatchAskComponent implements Component {
+   private pages: AskComponent[];
+   private answers: Array<AskResponse | undefined>;
+   private current = 0;
+   private title = "";
+   private confirmingSkips = false;
+   private reviewScrollOffset = 0;
+   private reviewMaxScrollOffset = 0;
+   private _focused = false;
+
+   constructor(
+      private questions: BatchQuestion[],
+      private settings: PromptSettings,
+      private tui: TUI,
+      private theme: Theme,
+      private keybindings: KeybindingsManager,
+      private onDone: (answers: BatchAnswer[] | null) => void,
+   ) {
+      this.answers = questions.map(() => undefined);
+      this.pages = questions.map((entry, index) => new AskComponent(
+         entry.question,
+         entry.context,
+         entry.options,
+         entry.allowMultiple,
+         entry.allowFreeform,
+         settings.allowComment,
+         settings.displayMode,
+         settings.singleSelectLayout,
+         settings.contextExpanded,
+         tui,
+         theme,
+         keybindings,
+         settings.shortcuts,
+         (result) => this.handlePageDone(index, result),
+      ));
+      this.updateChrome();
+   }
+
+   get focused(): boolean {
+      return this._focused;
+   }
+   set focused(value: boolean) {
+      this._focused = value;
+      const page = this.pages[this.current];
+      if (page) page.focused = value;
+   }
+
+   invalidate(): void {
+      for (const page of this.pages) page.invalidate();
+   }
+
+   render(width: number): string[] {
+      const page = this.pages[this.current];
+      return page ? page.render(width) : this.renderReview(width);
+   }
+
+   handleInput(data: string): void {
+      const pageCount = this.questions.length + 1;
+      // Tab and shift+tab move between pages here; inside a page, arrows and
+      // ctrl+j/k still move the option selection.
+      if (matchesKey(data, Key.tab)) {
+         this.goTo((this.current + 1) % pageCount);
+         return;
+      }
+      if (matchesKey(data, Key.shift("tab"))) {
+         this.goTo((this.current + pageCount - 1) % pageCount);
+         return;
+      }
+      const page = this.pages[this.current];
+      if (page) {
+         page.handleInput(data);
+         return;
+      }
+      this.handleReviewInput(data);
+   }
+
+   private handlePageDone(index: number, result: AskUIResult | null): void {
+      if (result === null) {
+         this.onDone(null);
+         return;
+      }
+      this.answers[index] = result;
+      const count = this.questions.length;
+      for (let step = 1; step <= count; step++) {
+         const next = (index + step) % count;
+         if (!this.answers[next]) {
+            this.goTo(next);
+            return;
+         }
+      }
+      this.goTo(count);
+   }
+
+   private goTo(target: number): void {
+      const previous = this.pages[this.current];
+      if (previous) previous.focused = false;
+      this.current = target;
+      this.confirmingSkips = false;
+      this.reviewScrollOffset = 0;
+      const next = this.pages[target];
+      if (next) next.focused = this._focused;
+      this.updateChrome();
+      this.tui.requestRender();
+   }
+
+   private updateChrome(): void {
+      const labels = this.questions.map((_, index) => {
+         const label = `${index + 1}${this.answers[index] ? "✓" : ""}`;
+         return index === this.current ? `[${label}]` : label;
+      });
+      const review = this.current === this.questions.length ? "[review]" : "review";
+      this.title = `ask_user ${labels.join(" ")} · ${review}`;
+      const hint = literalHint(this.theme, "tab/shift+tab", "questions");
+      for (const page of this.pages) page.setBatchChrome(this.title, hint);
+   }
+
+   private unansweredCount(): number {
+      return this.answers.filter((answer) => !answer).length;
+   }
+
+   private handleReviewInput(data: string): void {
+      if (this.keybindings.matches(data, "tui.select.cancel")) {
+         this.onDone(null);
+         return;
+      }
+      if (this.keybindings.matches(data, "tui.select.confirm")) {
+         if (this.unansweredCount() > 0 && !this.confirmingSkips) {
+            this.confirmingSkips = true;
+            this.tui.requestRender();
+            return;
+         }
+         this.onDone(this.answers.map((response): BatchAnswer =>
+            response ? { status: "answered", response } : { status: "skipped" }));
+         return;
+      }
+      const jump = Number.parseInt(data, 10);
+      if (data.length === 1 && jump >= 1 && jump <= this.questions.length) {
+         this.goTo(jump - 1);
+         return;
+      }
+      const pageRows = Math.max(1, getOverlayMaxRenderLinesForRows(this.tui.terminal.rows) - 4);
+      const scrollBy = matchesSelectUp(data, this.keybindings) ? -1
+         : matchesSelectDown(data, this.keybindings) ? 1
+            : matchesKey(data, PROMPT_SCROLL_PAGE_UP_KEY) ? -pageRows
+               : matchesKey(data, PROMPT_SCROLL_PAGE_DOWN_KEY) ? pageRows
+                  : 0;
+      if (scrollBy !== 0) {
+         this.reviewScrollOffset = Math.max(0, Math.min(this.reviewScrollOffset + scrollBy, this.reviewMaxScrollOffset));
+         this.tui.requestRender();
+      }
+   }
+
+   private renderReview(width: number): string[] {
+      const theme = this.theme;
+      const innerWidth = Math.max(1, width - BOX_BORDER_OVERHEAD);
+      const wrap = (text: string) => wrapTextWithAnsi(text, innerWidth);
+      const contentLines = [
+         ...wrap(theme.fg("accent", theme.bold("Review answers"))),
+         "",
+      ];
+      this.questions.forEach((entry, index) => {
+         const response = this.answers[index];
+         const marker = response ? theme.fg("success", "✓") : theme.fg("warning", "○");
+         contentLines.push(...wrap(`${marker} ${theme.fg("text", `${index + 1}. ${entry.question}`)}`));
+         contentLines.push(...wrap(response
+            ? `   ${theme.fg("dim", "→")} ${theme.fg("accent", formatResponseSummary(response))}`
+            : `   ${theme.fg("warning", "unanswered")}`));
+      });
+
+      const unanswered = this.unansweredCount();
+      const overlayToggle = this.settings.shortcuts.overlayToggle;
+      const hints = [
+         keybindingHint(theme, this.keybindings, "tui.select.confirm", unanswered > 0 ? "submit with skips" : "submit"),
+         literalHint(theme, this.questions.length > 1 ? `1-${this.questions.length}` : "1", "edit"),
+         literalHint(theme, "tab/shift+tab", "questions"),
+         this.settings.displayMode === "overlay" && !overlayToggle.disabled
+            ? literalHint(theme, overlayToggle.spec, "hide")
+            : null,
+         keybindingHint(theme, this.keybindings, "tui.select.cancel", "cancel"),
+      ].filter((hint): hint is string => !!hint).join(" • ");
+      const footerLines = [
+         "",
+         ...(this.confirmingSkips
+            ? wrap(theme.fg("warning", `${unanswered} unanswered — press ${formatKeyList(this.keybindings.getKeys("tui.select.confirm"))} again to submit with skips`))
+            : []),
+         ...wrap(theme.fg("dim", hints)),
+      ];
+
+      // Inline prompts grow with their content; overlays are capped, so the
+      // answers scroll while the footer stays visible.
+      let visibleContent = contentLines;
+      if (this.settings.displayMode === "overlay") {
+         const bodyCapacity = Math.max(1, getOverlayMaxRenderLinesForRows(this.tui.terminal.rows) - 2);
+         const contentBudget = Math.max(1, bodyCapacity - footerLines.length);
+         this.reviewMaxScrollOffset = Math.max(0, contentLines.length - contentBudget);
+         this.reviewScrollOffset = Math.min(this.reviewScrollOffset, this.reviewMaxScrollOffset);
+         visibleContent = contentLines.slice(this.reviewScrollOffset, this.reviewScrollOffset + contentBudget);
+         if (this.reviewScrollOffset > 0) {
+            visibleContent[0] = theme.fg("dim", "↑ more");
+         }
+         if (this.reviewScrollOffset < this.reviewMaxScrollOffset) {
+            visibleContent[visibleContent.length - 1] = theme.fg("dim", "↓ more");
+         }
+      } else {
+         this.reviewMaxScrollOffset = 0;
+      }
+      return frameBox(theme, this.title, [...visibleContent, ...footerLines], width);
    }
 }
 
@@ -2100,15 +2351,15 @@ async function askViaDialogs(
 }
 
 /**
- * Ask a `questions` batch one question at a time. Each question gets the same
- * UI as a single ask_user call (custom prompt, falling back to the
- * select()/input() dialogs), labelled with its position. Cancelling any
- * question cancels the whole batch, and every prompt shares one deadline.
+ * RPC/headless fallback for a `questions` batch: ask each question in turn
+ * with the select()/input() dialogs. There is no review step here, so
+ * cancelling any question cancels the whole batch, and every dialog stage
+ * shares one deadline.
  */
-async function askBatchSequentially(
-   ui: ExtensionUIContext,
+async function askBatchViaDialogs(
+   ui: { select: Function; input: Function },
    questions: BatchQuestion[],
-   settings: PromptSettings,
+   allowComment: boolean,
    signal: AbortSignal | undefined,
    deadline: number | undefined,
 ): Promise<BatchAnswer[] | null> {
@@ -2123,43 +2374,20 @@ async function askBatchSequentially(
          const prompt = entry.context ? `${title}\n\nContext:\n${entry.context}` : title;
          const answerOpts = dialogStageOptions(dialogOpts, deadline);
          if (answerOpts === null) return null;
-         const answer = await ui.input(prompt, "Type your answer...", answerOpts);
+         const answer = await ui.input(prompt, "Type your answer...", answerOpts) as string | undefined;
          response = signal?.aborted ? null : createFreeformResponse(answer);
       } else {
-         // No per-prompt timer: the batch deadline aborts `signal`, which
-         // dismisses this prompt exactly on time.
-         response = await runCustomPrompt<AskUIResult>(ui, {
-            signal,
-            displayMode: settings.displayMode,
-            overlayToggle: settings.shortcuts.overlayToggle,
-            createComponent: (tui, theme, keybindings, complete) => new AskComponent(
-               title,
-               entry.context,
-               entry.options,
-               entry.allowMultiple,
-               entry.allowFreeform,
-               settings.allowComment,
-               settings.displayMode,
-               settings.singleSelectLayout,
-               settings.contextExpanded,
-               tui,
-               theme,
-               keybindings,
-               settings.shortcuts,
-               complete,
-            ),
-            fallback: () => askViaDialogs(
-               ui,
-               title,
-               entry.context,
-               entry.options,
-               entry.allowMultiple,
-               entry.allowFreeform,
-               settings.allowComment,
-               dialogOpts,
-               deadline,
-            ),
-         });
+         response = await askViaDialogs(
+            ui,
+            title,
+            entry.context,
+            entry.options,
+            entry.allowMultiple,
+            entry.allowFreeform,
+            allowComment,
+            dialogOpts,
+            deadline,
+         );
       }
       if (!response) return null;
       answers.push({ status: "answered", response });
@@ -2418,10 +2646,12 @@ function createAskEventEmitter(pi: ExtensionAPI) {
 
 function formatBatchAnswers(details: AskBatchDetails): string {
    const lines = details.questions.map((subject, index) => {
-      const summary = formatResponseSummary(details.answers[index]!.response);
+      const answer = details.answers[index]!;
+      const summary = answer.status === "answered" ? formatResponseSummary(answer.response) : "(skipped)";
       return `${index + 1}. ${subject.question} → ${summary}`;
    });
-   return [`User answered ${details.answers.length} of ${details.questions.length} questions:`, ...lines].join("\n");
+   const answered = details.answers.filter((answer) => answer.status === "answered").length;
+   return [`User answered ${answered} of ${details.questions.length} questions:`, ...lines].join("\n");
 }
 
 function formatBatchForMessage(questions: BatchQuestion[], allowComment: boolean): string {
@@ -2479,13 +2709,14 @@ async function executeBatch(
    const deadlineTimer = deadline === undefined ? undefined : setTimeout(() => batch.abort(), params.timeout);
    let answers: BatchAnswer[] | null;
    try {
-      answers = await whileBlocked(pi, () => askBatchSequentially(
-         ctx.ui,
-         questions,
-         settings,
-         batch.signal,
-         deadline,
-      ));
+      answers = await whileBlocked(pi, () => runCustomPrompt<BatchAnswer[]>(ctx.ui, {
+         signal: batch.signal,
+         displayMode: settings.displayMode,
+         overlayToggle: settings.shortcuts.overlayToggle,
+         createComponent: (tui, theme, keybindings, complete) =>
+            new BatchAskComponent(questions, settings, tui, theme, keybindings, complete),
+         fallback: () => askBatchViaDialogs(ctx.ui, questions, settings.allowComment, batch.signal, deadline),
+      }));
    } finally {
       if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
       signal?.removeEventListener("abort", forwardAbort);
@@ -2499,8 +2730,11 @@ async function executeBatch(
       };
    }
 
+   // Skipped questions emit nothing; each answered one emits its usual event.
    answers.forEach((answer, index) => {
-      events.answered(subjects[index]!, answer.response, { index, total: subjects.length });
+      if (answer.status === "answered") {
+         events.answered(subjects[index]!, answer.response, { index, total: subjects.length });
+      }
    });
    const result = details(answers, false);
    return {
@@ -2531,11 +2765,17 @@ function formatOptionMarkers(
 
 function formatBatchResult(theme: Theme, details: AskBatchDetails, expanded: boolean): string {
    if (details.cancelled) return theme.fg("warning", "Cancelled");
+   const answered = details.answers.filter((answer) => answer.status === "answered").length;
    let text = theme.fg("success", "✓ ")
-      + theme.fg("accent", `${details.answers.length} of ${details.questions.length} answered`);
+      + theme.fg("accent", `${answered} of ${details.questions.length} answered`);
    details.questions.forEach((subject, index) => {
-      const response = details.answers[index]!.response;
+      const answer = details.answers[index]!;
       text += `\n${theme.fg("dim", `${index + 1}.`)} ${theme.fg("muted", subject.question)}${theme.fg("dim", " → ")}`;
+      if (answer.status === "skipped") {
+         text += theme.fg("warning", "(skipped)");
+         return;
+      }
+      const response = answer.response;
       if (response.kind === "freeform") {
          text += theme.fg("muted", "(wrote) ");
       }

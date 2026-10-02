@@ -3443,19 +3443,24 @@ describe("questions batch", () => {
       return { custom: open, select: open, input: open };
    }
 
-   // Answers each custom prompt with the next key in `keys` (enter once they run out).
-   function pressInCustomPrompt(keys: string[], rendered: string[] = []) {
-      return async (factory: any) => await new Promise((resolve) => {
-         const component = factory(
-            { requestRender() { }, terminal: { rows: 24 } },
+   // Mounts the batch prompt synchronously; keys go to `state.component`.
+   function mountBatchPrompt(rows = 24) {
+      const state: { component?: any; settled: boolean } = { settled: false };
+      const custom = async (factory: any) => await new Promise((resolve) => {
+         state.component = factory(
+            { requestRender() { }, terminal: { rows } },
             createTheme(),
             createKeybindings(),
-            resolve,
+            (value: unknown) => {
+               state.settled = true;
+               resolve(value);
+            },
          );
-         rendered.push(component.render(100).join("\n"));
-         component.handleInput(keys.shift() ?? "enter");
       });
+      return { state, custom };
    }
+
+   const press = (component: any, ...keys: string[]) => keys.forEach((key) => component.handleInput(key));
 
    const twoQuestions = [{ question: "First?" }, { question: "Second?" }];
    const validationCases: Array<{ name: string; params: Record<string, unknown>; expected: string[]; noUI?: boolean }> = [
@@ -3498,12 +3503,11 @@ describe("questions batch", () => {
       });
    }
 
-   test("asks each question in order and publishes the answers only after the last one", async () => {
+   test("records each page's answer and publishes nothing until the review page submits", async () => {
       stubEnv("PI_ASK_USER_EMIT_FULL_EVENTS", "false");
       const tool = await setupTool();
-      const rendered: string[] = [];
-      const inputTitles: string[] = [];
-      const result = await tool.execute(
+      const { state, custom } = mountBatchPrompt();
+      const execution = tool.execute(
          "id",
          {
             questions: [
@@ -3513,17 +3517,23 @@ describe("questions batch", () => {
          },
          undefined,
          undefined,
-         { hasUI: true, ui: {
-            custom: pressInCustomPrompt(["enter"], rendered),
-            input: async (title: string) => {
-               inputTitles.push(title);
-               return "No";
-            },
-         } },
+         { hasUI: true, ui: { custom } },
       );
+      const prompt = state.component;
+      expect(prompt.render(100).join("\n")).toContain("ask_user [1] 2 · review");
 
-      expect(rendered[0]).toContain("(1/2) Which database?");
-      expect(inputTitles).toEqual(["(2/2) Anything else?"]);
+      press(prompt, "enter"); // page 1 records Postgres and moves to page 2
+      editorText = "No"; // page 2 has no options, so it opens straight in the editor
+      press(prompt, "enter");
+      const review = prompt.render(100).join("\n");
+      expect(review).toContain("ask_user 1✓ 2✓ · [review]");
+      expect(review).toContain("→ Postgres");
+      expect(review).toContain("→ No");
+      expect(state.settled).toBe(false);
+      expect(emittedEvents.filter((event) => event.name.startsWith("ask:"))).toEqual([]);
+
+      press(prompt, "enter");
+      const result = await execution;
       expect(result.details).toEqual({
          kind: "batch",
          questions: [
@@ -3585,35 +3595,144 @@ describe("questions batch", () => {
       ]);
    });
 
-   for (const outcome of ["escape on the second question", "abort after the first answer", "already aborted"] as const) {
+   test("tab moves between pages without moving the option selection, and pages keep their state", async () => {
+      const tool = await setupTool();
+      const { state, custom } = mountBatchPrompt();
+      const execution = tool.execute(
+         "id",
+         { questions: [{ question: "First?", options: ["A", "B", "C"] }, { question: "Second?", options: ["X"] }] },
+         undefined,
+         undefined,
+         { hasUI: true, ui: { custom } },
+      );
+      const prompt = state.component;
+      press(prompt, "down", "tab"); // highlight B, then leave page 1 unanswered
+      expect(prompt.render(100).join("\n")).toContain("ask_user 1 [2] · review");
+      press(prompt, "shift+tab", "enter", "enter", "enter"); // back to page 1, answer both, submit
+      const result = await execution;
+      expect(result.details.answers).toEqual([
+         { status: "answered", response: { kind: "selection", selections: ["B"] } },
+         { status: "answered", response: { kind: "selection", selections: ["X"] } },
+      ]);
+   });
+
+   test("submitting with unanswered questions needs a second confirmation and reports the skips", async () => {
+      stubEnv("PI_ASK_USER_EMIT_FULL_EVENTS", "false");
+      const tool = await setupTool();
+      const { state, custom } = mountBatchPrompt();
+      const execution = tool.execute(
+         "id",
+         { questions: [{ question: "First?", options: ["A"] }, { question: "Second?", options: ["B"] }] },
+         undefined,
+         undefined,
+         { hasUI: true, ui: { custom } },
+      );
+      const prompt = state.component;
+      press(prompt, "enter", "tab", "enter"); // answer page 1, go to review, try to submit
+      expect(state.settled).toBe(false);
+      const review = prompt.render(100).join("\n");
+      expect(review).toContain("○ 2. Second?");
+      expect(review).toContain("1 unanswered — press enter again to submit with skips");
+
+      press(prompt, "enter");
+      const result = await execution;
+      expect(result.details.answers).toEqual([
+         { status: "answered", response: { kind: "selection", selections: ["A"] } },
+         { status: "skipped" },
+      ]);
+      expect(result.content).toEqual([{
+         type: "text",
+         text: "User answered 1 of 2 questions:\n1. First? → A\n2. Second? → (skipped)",
+      }]);
+      expect(emittedEvents.filter((event) => event.name.startsWith("ask:"))).toEqual([
+         { name: "ask:answered", payload: { question: "First?", response: { kind: "selection" }, batch: { index: 0, total: 2 } } },
+      ]);
+   });
+
+   test("re-answering a question from the review page replaces its earlier answer", async () => {
+      const tool = await setupTool();
+      const { state, custom } = mountBatchPrompt();
+      const execution = tool.execute(
+         "id",
+         { questions: [{ question: "First?", options: ["A", "B"] }, { question: "Second?", options: ["X"] }] },
+         undefined,
+         undefined,
+         { hasUI: true, ui: { custom } },
+      );
+      // Answer A and X, jump back to question 1 from the review page, choose B, submit.
+      press(state.component, "enter", "enter", "1", "down", "enter", "enter");
+      const result = await execution;
+      expect(result.details.answers).toEqual([
+         { status: "answered", response: { kind: "selection", selections: ["B"] } },
+         { status: "answered", response: { kind: "selection", selections: ["X"] } },
+      ]);
+   });
+
+   test("keeps the review footer visible and scrolls the answers on a short overlay", async () => {
+      const tool = await setupTool();
+      const { state, custom } = mountBatchPrompt(12);
+      const execution = tool.execute(
+         "id",
+         { questions: ["First?", "Second?", "Third?", "Fourth?"].map((question) => ({ question, options: ["A"] })) },
+         undefined,
+         undefined,
+         { hasUI: true, ui: { custom } },
+      );
+      const prompt = state.component;
+      press(prompt, "enter", "enter", "enter", "enter"); // all answered, now on the review page
+      const top = prompt.render(60);
+      expect(top.length).toBeLessThanOrEqual(10); // overlay cap for a 12-row terminal
+      expect(top.join("\n")).toContain("↓ more");
+      expect(top.join("\n")).not.toContain("4. Fourth?");
+      expect(top.join("\n")).toContain("submit");
+
+      press(prompt, ...Array(10).fill("down"));
+      const bottom = prompt.render(60).join("\n");
+      expect(bottom).toContain("4. Fourth?");
+      expect(bottom).toContain("↑ more");
+      expect(bottom).toContain("submit");
+
+      press(prompt, "enter");
+      expect((await execution).details.cancelled).toBe(false);
+   });
+
+   for (const outcome of ["esc on a page", "esc on the review page", "abort after the first answer", "timeout", "already aborted"] as const) {
       test(`publishes no answers when the batch ends by ${outcome}`, async () => {
+         const timers: Array<{ callback: () => void; ms: number }> = [];
+         if (outcome === "timeout") {
+            const setTimer = spyOn(globalThis, "setTimeout").mockImplementation(((callback: () => void, ms: number) => {
+               timers.push({ callback, ms });
+               return timers.length;
+            }) as any);
+            const clearTimer = spyOn(globalThis, "clearTimeout").mockImplementation((() => { }) as any);
+            onTestFinished(() => {
+               setTimer.mockRestore();
+               clearTimer.mockRestore();
+            });
+         }
          const tool = await setupTool();
          const controller = new AbortController();
          if (outcome === "already aborted") controller.abort();
+         const { state, custom } = mountBatchPrompt();
          let prompts = 0;
-         const result = await tool.execute(
+         const execution = tool.execute(
             "id",
-            { questions: [{ question: "First?", options: ["A"] }, { question: "Second?", options: ["B"] }] },
+            { questions: [{ question: "First?", options: ["A"] }, { question: "Second?", options: ["B"] }], timeout: 1000 },
             controller.signal,
             undefined,
-            { hasUI: true, ui: {
-               custom: async (factory: any) => await new Promise((resolve) => {
-                  prompts++;
-                  const component = factory(
-                     { requestRender() { }, terminal: { rows: 24 } },
-                     createTheme(),
-                     createKeybindings(),
-                     resolve,
-                  );
-                  if (outcome === "escape on the second question" && prompts === 2) {
-                     component.handleInput("escape");
-                     return;
-                  }
-                  component.handleInput("enter");
-                  if (outcome === "abort after the first answer") controller.abort();
-               }),
-            } },
+            { hasUI: true, ui: { custom: async (factory: any) => { prompts++; return custom(factory); } } },
          );
+         if (outcome !== "already aborted") {
+            press(state.component, "enter"); // the first answer is recorded, then the batch ends
+            if (outcome === "esc on a page") press(state.component, "escape");
+            if (outcome === "esc on the review page") press(state.component, "tab", "escape");
+            if (outcome === "abort after the first answer") controller.abort();
+            if (outcome === "timeout") {
+               expect(timers.map((timer) => timer.ms)).toEqual([1000]); // one timer for the whole batch
+               timers[0]!.callback();
+            }
+         }
+         const result = await execution;
 
          expect(result.details).toMatchObject({ kind: "batch", answers: [], cancelled: true });
          expect(emittedEvents.some((event) => event.name === "ask:answered")).toBe(false);
@@ -3622,7 +3741,7 @@ describe("questions batch", () => {
             expect(emittedEvents).toEqual([]);
             return;
          }
-         expect(prompts).toBe(outcome === "escape on the second question" ? 2 : 1);
+         expect(prompts).toBe(1);
          expect(result.content).toEqual([{ type: "text", text: "User cancelled the questions" }]);
          expect(emittedEvents.filter((event) => event.name.startsWith("ask:"))).toEqual([
             { name: "ask:cancelled", payload: { question: "First?", batch: { index: 0, total: 2 } } },
@@ -3745,6 +3864,10 @@ describe("questions batch", () => {
       expect(expanded).toContain("private context");
       expect(expanded).toContain("● Postgres");
       expect(expanded).toContain("○ SQLite");
+
+      const skipped = render({ ...details, answers: [details.answers[0], { status: "skipped" }] }, false);
+      expect(skipped).toContain("✓ 1 of 2 answered");
+      expect(skipped).toContain("2. Anything else? → (skipped)");
 
       expect(render({ ...details, answers: [], cancelled: true }, false)).toBe("Cancelled");
       expect(render(details, false, { isError: true })).toBe("✗ boom");

@@ -161,4 +161,46 @@ for (const title of ["Alpha", "日本語 😀 café"]) {
    });
    assert.deepEqual(rendered.details.response, { kind: "selection", selections: [title] });
 }
-console.log("Host smoke passed: registration, schema, batch schema validation, RPC select, redacted event, thrown errors, error rendering, native TUI.");
+// The batch prompt: its pages (strip in the frame title) and review page must fit
+// the width with the host's real wrapping, in both display modes.
+for (const displayMode of ["inline", "overlay"]) {
+   const batch = await tool.execute("smoke-batch-tui", {
+      questions: [
+         { question: "Choose one", context: "A **short** context.", options: [{ title: "日本語 😀 café" }, { title: "Beta" }] },
+         { question: "Pick another", options: [{ title: "Gamma" }], allowFreeform: false },
+      ],
+      allowComment: false,
+      displayMode,
+   }, undefined, undefined, {
+      hasUI: true,
+      ui: {
+         custom: async (factory) => {
+            let response;
+            const component = factory(
+               { requestRender() {}, terminal: { rows: 16 } },
+               theme, getKeybindings(), (value) => { response = value; },
+            );
+            const assertFits = (step) => {
+               for (const width of [40, 80]) {
+                  component.invalidate();
+                  for (const line of component.render(width)) {
+                     assert.ok(visibleWidth(line) <= width, `${displayMode} ${step} line exceeds ${width} columns`);
+                  }
+               }
+            };
+            assertFits("page");
+            component.handleInput("\r");
+            component.handleInput("\r");
+            assertFits("review");
+            assert.ok(component.render(80).some((line) => line.includes("Review answers")));
+            component.handleInput("\r");
+            return response;
+         },
+      },
+   });
+   assert.deepEqual(batch.details.answers, [
+      { status: "answered", response: { kind: "selection", selections: ["日本語 😀 café"] } },
+      { status: "answered", response: { kind: "selection", selections: ["Gamma"] } },
+   ]);
+}
+console.log("Host smoke passed: registration, schema, batch schema validation, RPC select, redacted event, thrown errors, error rendering, native TUI, batch TUI.");
