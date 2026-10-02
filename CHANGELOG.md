@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `questions` parameter for asking 2-4 independent questions in one call. Each entry has its own `question`, `context`, `options`, `allowMultiple`, and `allowFreeform`; the remaining parameters apply to the whole batch. The prompt shows a page per question plus a review page: `tab` / `shift+tab` switch pages without losing filters or drafts, and only the review page submits. Unanswered questions can be submitted as skipped after a second confirmation. Batches return `{ kind: "batch", questions, answers, cancelled }` details and publish their events only on submit, with a `batch: { index, total }` position. In RPC mode the questions are asked one after another with the fallback dialogs. One timeout covers the whole batch. Closes #62. The page and review flow follows the design first proposed in #39.
+
+### Changed
+
+- `question` is no longer required by the schema; each call must pass exactly one of `question` or `questions`, which is checked before any UI opens.
+- The tool description and prompt guidelines now describe batches. They still default to one focused question per call and keep dependent questions for later calls, but every host's system prompt changes once on upgrade.
+- In a batch, `tab` / `shift+tab` switch questions instead of moving the option selection. Single questions are unchanged.
+
 ## [0.15.1](https://github.com/edlsh/pi-ask-user/releases/tag/v0.15.1) - 2026-09-22
 
 ### Fixed

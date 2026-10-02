@@ -56,6 +56,9 @@ Call `ask_user` with one decision at a time:
 - `allowFreeform`: usually `true`
 - `displayMode` *(optional)*: `"overlay"` (default) or `"inline"`. Use `"inline"` when preceding assistant context (summary, trade-offs, recommendation) is essential to the decision and should remain visible — overlays cover the conversation underneath. The user may set a personal default via the `PI_ASK_USER_DISPLAY_MODE` environment variable; only pass this when you intentionally want to override it for one call.
 - `contextExpanded` *(optional)*: `true` opens oversized context fully expanded instead of collapsed behind a one-line summary. The user may set a personal default via `PI_ASK_USER_CONTEXT_EXPANDED`; only pass this when the context is the evidence the user needs to weigh the options.
+
+When 2-4 decisions at the same boundary are independent of each other and their prerequisites are settled, you may ask them together with `questions` instead of `question`. Each entry carries its own `question`, `context`, `options`, `allowMultiple`, and `allowFreeform`. Never batch a decision whose options depend on another answer; ask it in a later call once that answer is known.
+
 ### 5) Commit the decision
 After response:
 - restate the decision in plain language
@@ -141,12 +144,35 @@ Good options include a short description when trade-offs are non-obvious.
 }
 ```
 
+### Independent decisions at one checkpoint
+
+```json
+{
+  "questions": [
+    {
+      "question": "Which logging backend should the service use?",
+      "context": "Both integrate with the existing middleware; only the hosted option needs a new vendor contract.",
+      "options": [
+        { "title": "Self-hosted Loki", "description": "No new vendor, more ops work" },
+        { "title": "Hosted Datadog", "description": "Fastest setup, recurring cost" }
+      ]
+    },
+    {
+      "question": "Should the first release include the admin dashboard?",
+      "options": [{ "title": "Include it" }, { "title": "Defer it" }],
+      "allowFreeform": false
+    }
+  ]
+}
+```
+
 ## Anti-patterns
 
 - Asking `ask_user` without first gathering context
 - Using it for trivial formatting choices
 - Forcing options when freeform is clearly better
 - Asking the same question repeatedly without new information
+- Batching dependent decisions in `questions`, or using a batch to dodge the one-decision-per-question rule
 - Proceeding with high-stakes implementation after unclear/cancelled answer
 
 ## If user cancels or answer is unclear

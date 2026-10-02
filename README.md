@@ -13,6 +13,7 @@ High-quality video: [ask-user-demo.mp4](https://github.com/edlsh/pi-ask-user/blo
 - Searchable single-select option lists with wrapped titles and descriptions
 - Responsive split-pane details preview on wide terminals, with a persistent single-column preference
 - Multi-select option lists
+- Batches of 2-4 independent questions in one prompt, with a review page before submitting
 - Optional freeform responses
 - User-toggleable extra context on structured selections
 - Context display support
@@ -61,7 +62,8 @@ The registered tool name is:
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `question` | `string` | *required* | The question to ask the user |
+| `question` | `string?` | — | The question to ask the user. Each call needs exactly one of `question` or `questions` |
+| `questions` | `{question, context?, options?, allowMultiple?, allowFreeform?}[]?` | — | 2-4 independent questions shown together, used instead of `question`. Set `context`, `options`, `allowMultiple`, and `allowFreeform` on each entry; passing them at the top level as well is an error. The remaining parameters apply to the whole batch. See [Asking several questions at once](#asking-several-questions-at-once) |
 | `context` | `string?` | — | Relevant context summary shown before the question |
 | `options` | `{title, description?}[]?` | `[]` | Multiple-choice options. The schema is a flat object shape (no `anyOf`, which some provider proxies strip or reject); plain strings and common alias keys (`label`, `text`, `value`, `name`, `option`) are still accepted at runtime |
 | `allowMultiple` | `boolean?` | `false` | Enable multi-select mode |
@@ -92,6 +94,36 @@ The registered tool name is:
 ```
 
 `displayMode: "inline"` uses the same interaction logic but skips overlay mode when calling `ctx.ui.custom(...)`. RPC/headless fallback behavior is unchanged.
+
+## Asking several questions at once
+
+Use `questions` for 2-4 decisions that are independent of each other and whose prerequisites are already settled. Anything that depends on another answer belongs in a later `ask_user` call.
+
+```json
+{
+  "questions": [
+    {
+      "question": "Which database should the service use?",
+      "context": "Both are supported by the ORM; the service is single-region.",
+      "options": [
+        { "title": "Postgres", "description": "Managed, JSONB support" },
+        { "title": "SQLite", "description": "No extra infrastructure" }
+      ]
+    },
+    {
+      "question": "Which deploy target?",
+      "options": [{ "title": "Fly.io" }, { "title": "Cloudflare" }],
+      "allowFreeform": false
+    },
+    { "question": "Anything else we should know before starting?" }
+  ],
+  "timeout": 300000
+}
+```
+
+The prompt shows one page per question plus a review page. Confirming a page records its answer and moves to the next unanswered question, then to the review page. `tab` / `shift+tab` switch pages without losing filters, drafts, or checked options, and number keys on the review page jump back to a question. Only the review page submits. If questions are still unanswered, the first press warns and a second press submits them as skipped. Questions without options open straight in a text editor.
+
+In RPC/headless mode the questions are asked one after another with the fallback dialogs. There is no review page there, so cancelling any question cancels the whole batch.
 
 ## Personal preferences via environment variables
 
@@ -165,9 +197,11 @@ While an `ask_user` prompt is open:
 | `alt+o` (configurable via `overlayToggleKey`) | Hide/show the overlay popup so you can read the agent's prior output. Available in `overlay` mode only. The first time you hide it, a notification reminds you which key brings it back. |
 | `ctrl+g` (configurable via `commentToggleKey`) | Toggle the optional comment/extra-context row (when `allowComment: true`). |
 | `ctrl+e` | Expand or collapse oversized context while choosing an option. If another configured ask shortcut owns it, the prompt shows `ctrl+x` or `ctrl+y` instead. |
-| `enter` | Confirm the focused option, submit a freeform response, or submit/skip an optional comment. |
-| `esc` | Clear the search filter, exit freeform/comment mode, or cancel the prompt. |
-| `↑` / `↓`, `ctrl+k` / `ctrl+j` | Navigate options. `ctrl+k` / `ctrl+j` (vim-style) work while typing in searchable prompts without disturbing the filter. |
+| `enter` | Confirm the focused option, submit a freeform response, or submit/skip an optional comment. In a batch, confirming records the answer; on the review page it submits. |
+| `esc` | Clear the search filter, exit freeform/comment mode, or cancel the prompt. In a batch, cancelling cancels every question. |
+| `↑` / `↓`, `ctrl+k` / `ctrl+j` | Navigate options. `ctrl+k` / `ctrl+j` (vim-style) work while typing in searchable prompts without disturbing the filter. On a batch's review page they scroll the answers. |
+| `tab` / `shift+tab` | Single question: move down/up through the options. Batch: switch to the next/previous question or the review page. |
+| `1`-`4` | Batch review page: jump back to that question. |
 
 If you prefer never to see the overlay, set `displayMode: "inline"` per call or `PI_ASK_USER_DISPLAY_MODE=inline` globally.
 
@@ -175,7 +209,7 @@ If you prefer never to see the overlay, set `displayMode: "inline"` per call or 
 
 Aborting a tool call dismisses its active prompt, including freeform and RPC dialogs. Cancelling or timing out an optional RPC comment cancels the whole answer; press Enter with an empty comment to submit the selection without a comment.
 
-The custom UI uses one timeout for the prompt. In the dialog fallback, the configured timeout applies separately to each dialog stage.
+The custom UI uses one timeout for the prompt. In the dialog fallback, the configured timeout applies separately to each dialog stage of a single question. A batch has one deadline for all of its questions, in the custom UI and in the dialog fallback.
 
 ### Mobile-sized terminals
 
@@ -192,6 +226,12 @@ When a displayed prompt resolves with an answer or cancellation, it emits `ask:a
 { question: string; response: { kind: "selection" | "freeform" } }
 // ask:cancelled
 { question: string }
+```
+
+A batch publishes nothing until the user submits it. Then each answered question emits `ask:answered` and skipped questions emit nothing; a cancelled batch emits `ask:cancelled` for every question. Batch events carry the same payload plus the question's position:
+
+```typescript
+{ ...payload, batch: { index: number; total: number } }
 ```
 
 Set `PI_ASK_USER_EMIT_FULL_EVENTS=true` (or `1`, `yes`, `on`) to restore the full payloads — `context`, the offered `options` on cancel, and the complete `response` including selections, comment, and freeform text. Leave it unset unless another extension you trust needs the answer itself; the full response is always available to the agent through the tool result's `details`.
@@ -218,7 +258,19 @@ interface AskToolDetails {
 }
 ```
 
-Malformed options, unavailable interactive UI, and UI failures throw so Pi records a failed tool call rather than a successful answer. These host-created error results do not guarantee the `AskToolDetails` shape. Error rendering also accepts older stored results with `details: { error: string }`.
+A `questions` batch returns separate details; the single-question shape above is unchanged:
+
+```typescript
+interface AskBatchDetails {
+  kind: "batch";
+  questions: Array<{ question: string; context?: string; options: QuestionOption[] }>;
+  // Index-aligned with questions; empty when the batch was cancelled.
+  answers: Array<{ status: "answered"; response: AskResponse } | { status: "skipped" }>;
+  cancelled: boolean;
+}
+```
+
+Malformed options, invalid `questions` batches, unavailable interactive UI, and UI failures throw so Pi records a failed tool call rather than a successful answer. These host-created error results do not guarantee either details shape. Error rendering also accepts older stored results with `details: { error: string }`.
 
 ## Contributing
 
