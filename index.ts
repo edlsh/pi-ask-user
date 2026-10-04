@@ -2830,11 +2830,13 @@ export default function(pi: ExtensionAPI) {
       ),
    });
 
+   // Asks the user, so only the model may call it; codemode scripts cannot open prompts. Pi types `exposure` from
+   // 1.0 and older hosts ignore it, so it is spread in to keep the definition valid against every supported host.
+   const modelOnly: Record<string, unknown> = { exposure: "model-only" };
    pi.registerTool({
+      ...modelOnly,
       name: "ask_user",
       label: "Ask User",
-      // Asks the user, so only the model may call it; codemode scripts cannot open prompts.
-      exposure: "model-only",
       description:
          "Ask the user a question with optional multiple-choice answers. Use this to gather information interactively. Ask one focused question per call, or 2-4 independent questions together through questions. Before calling, gather context with tools (read/web/ref) and pass a short summary via the context field.",
       promptSnippet:
