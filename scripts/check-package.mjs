@@ -8,6 +8,7 @@ const expectedFiles = [
   "LICENSE",
   "README.md",
   "index.ts",
+  "settings.ts",
   "package.json",
   "single-select-layout.ts",
   "skills/ask-user/SKILL.md",

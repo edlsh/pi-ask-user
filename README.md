@@ -19,7 +19,7 @@ High-quality video: [ask-user-demo.mp4](https://github.com/edlsh/pi-ask-user/blo
 - Context display support
 - Responsive context collapse that keeps the question and choices visible on small terminals without discarding full context
 - Configurable display mode: `overlay` (modal, default) or `inline` (rendered directly in the flow)
-- Runtime overlay toggle: press the configured overlay-toggle key (`alt+o` by default, configurable per call or via env var) while the prompt is open to temporarily hide/show the popup so you can read prior agent output, then press it again to bring it back
+- Runtime overlay toggle: press the configured overlay-toggle key (`alt+o` by default, configurable per call, via env var, or in `ask-user.json`) while the prompt is open to temporarily hide/show the popup so you can read prior agent output, then press it again to bring it back
 - Pi-TUI-aligned keybinding and editor behavior
 - Custom TUI rendering for tool calls and results
 - System prompt integration via `promptSnippet` and `promptGuidelines`
@@ -68,12 +68,12 @@ The registered tool name is:
 | `options` | `{title, description?}[]?` | `[]` | Multiple-choice options. The schema is a flat object shape (no `anyOf`, which some provider proxies strip or reject); plain strings and common alias keys (`label`, `text`, `value`, `name`, `option`) are still accepted at runtime |
 | `allowMultiple` | `boolean?` | `false` | Enable multi-select mode |
 | `allowFreeform` | `boolean?` | `true` | Add a "Type something" freeform option |
-| `allowComment` | `boolean?` | env var or `false` | Expose a user-toggleable extra-context option in the custom UI (`ctrl+g` or the toggle row) and collect an optional comment in fallback dialogs |
-| `displayMode` | `"overlay" \| "inline"?` | env var or `"overlay"` | Controls custom UI rendering: `overlay` shows the centered modal (current behavior), `inline` renders without overlay framing |
-| `singleSelectLayout` | `"auto" \| "list"?` | env var or `"auto"` | Use the responsive details pane automatically or always render descriptions below their options |
-| `contextExpanded` | `boolean?` | env var or `false` | Start with oversized context expanded. Per-call value overrides `PI_ASK_USER_CONTEXT_EXPANDED` |
-| `overlayToggleKey` | `string?` | env var or `"alt+o"` | Shortcut for hiding/showing the overlay popup (overlay mode only). Pi-TUI key spec, e.g. `"alt+o"`, `"ctrl+shift+h"`. Pass `"off"` to disable. |
-| `commentToggleKey` | `string?` | env var or `"ctrl+g"` | Shortcut for toggling the optional comment/extra-context row when `allowComment: true`. Pass `"off"` to disable. |
+| `allowComment` | `boolean?` | env var, settings file, or `false` | Expose a user-toggleable extra-context option in the custom UI (`ctrl+g` or the toggle row) and collect an optional comment in fallback dialogs |
+| `displayMode` | `"overlay" \| "inline"?` | env var, settings file, or `"overlay"` | Controls custom UI rendering: `overlay` shows the centered modal (current behavior), `inline` renders without overlay framing |
+| `singleSelectLayout` | `"auto" \| "list"?` | env var, settings file, or `"auto"` | Use the responsive details pane automatically or always render descriptions below their options |
+| `contextExpanded` | `boolean?` | env var, settings file, or `false` | Start with oversized context expanded. Per-call value overrides `PI_ASK_USER_CONTEXT_EXPANDED` |
+| `overlayToggleKey` | `string?` | env var, settings file, or `"alt+o"` | Shortcut for hiding/showing the overlay popup (overlay mode only). Pi-TUI key spec, e.g. `"alt+o"`, `"ctrl+shift+h"`. Pass `"off"` to disable. |
+| `commentToggleKey` | `string?` | env var, settings file, or `"ctrl+g"` | Shortcut for toggling the optional comment/extra-context row when `allowComment: true`. Pass `"off"` to disable. |
 | `timeout` | `number?` | — | Auto-dismiss after N ms and return `null` if the prompt times out |
 
 ## Example usage shape
@@ -125,9 +125,31 @@ The prompt shows one page per question plus a review page. Confirming a page rec
 
 In RPC/headless mode the questions are asked one after another with the fallback dialogs. There is no review page there, so cancelling any question cancels the whole batch.
 
-## Personal preferences via environment variables
+## Personal preferences
 
-Configure your defaults globally by setting these in your shell profile (`~/.zshrc`, `~/.bash_profile`, etc.):
+Defaults can be configured in a settings file or through environment variables. Per-call tool parameters override both.
+
+### Settings file
+
+Create `~/.pi/agent/ask-user.json` (or `<agent-dir>/ask-user.json` when `PI_CODING_AGENT_DIR` is set):
+
+```jsonc
+{
+  "displayMode": "inline",
+  "singleSelectLayout": "list",
+  "allowComment": false,
+  "contextExpanded": false,
+  "overlayToggleKey": "alt+o",
+  "commentToggleKey": "ctrl+g",
+  "emitFullEvents": false
+}
+```
+
+All keys are optional; unknown keys and wrong-typed values are ignored, matching the env-var behavior. Shortcut keys accept the same `"off"` / `"none"` / `"disabled"` disables and Pi-TUI key specs as the tool parameters. The file is read on every `ask_user` call, so edits apply without restarting Pi. A file that exists but is not valid JSON fails the call with the path in the error, so a configuration mistake is visible instead of silently ignored.
+
+### Environment variables
+
+Configure per-launch defaults by setting these in your shell profile (`~/.zshrc`, `~/.bash_profile`, etc.):
 
 ```bash
 export PI_ASK_USER_DISPLAY_MODE=inline
@@ -138,7 +160,7 @@ export PI_ASK_USER_COMMENT_TOGGLE_KEY=alt+c
 export PI_ASK_USER_CONTEXT_EXPANDED=true
 ```
 
-Environment variables must be present in the process that launches Pi. If Pi is launched from a desktop app or a different shell, changes in `~/.zshrc` may not be inherited; launch Pi from a terminal where `echo $PI_ASK_USER_DISPLAY_MODE` shows the expected value.
+Environment variables must be present in the process that launches Pi. If Pi is launched from a desktop app or a different shell, changes in `~/.zshrc` may not be inherited; launch Pi from a terminal where `echo $PI_ASK_USER_DISPLAY_MODE` shows the expected value. Environment variables win over `ask-user.json`, so one-off launches such as `PI_ASK_USER_DISPLAY_MODE=inline pi` still work while the settings file holds the persistent defaults.
 
 ### Display mode
 
@@ -146,7 +168,8 @@ Effective order:
 
 1. Per-call `displayMode` parameter (if provided)
 2. `PI_ASK_USER_DISPLAY_MODE` (if set to `"overlay"` or `"inline"`)
-3. Fallback default: `"overlay"`
+3. `displayMode` in `ask-user.json`
+4. Fallback default: `"overlay"`
 
 Unrecognised values are silently ignored and fall back to `"overlay"`.
 
@@ -155,8 +178,9 @@ Unrecognised values are silently ignored and fall back to `"overlay"`.
 Effective order:
 
 1. Per-call `singleSelectLayout` parameter (if provided)
-2. `PI_ASK_USER_SINGLE_SELECT_LAYOUT` (when set to `list`)
-3. Fallback default: `auto`
+2. `PI_ASK_USER_SINGLE_SELECT_LAYOUT` (when set to `list` or `auto`)
+3. `singleSelectLayout` in `ask-user.json`
+4. Fallback default: `auto`
 
 `auto` shows the details pane on wide terminals. `list` keeps descriptions below their options at every width.
 
@@ -166,7 +190,8 @@ Effective order:
 
 1. Per-call `allowComment` parameter (if provided)
 2. `PI_ASK_USER_ALLOW_COMMENT` (`true`, `1`, `yes`, or `on`; corresponding false values are also accepted)
-3. Fallback default: `false`
+3. `allowComment` in `ask-user.json`
+4. Fallback default: `false`
 
 ### Context expansion
 
@@ -174,7 +199,8 @@ Oversized context collapses behind a one-line summary so the question and choice
 
 1. Per-call `contextExpanded` parameter (if provided)
 2. `PI_ASK_USER_CONTEXT_EXPANDED` (`true`, `1`, `yes`, or `on`; corresponding false values are also accepted)
-3. Fallback default: `false`
+3. `contextExpanded` in `ask-user.json`
+4. Fallback default: `false`
 
 `ctrl+e` still toggles from whichever state the prompt opened in.
 
@@ -184,7 +210,8 @@ Effective order for both `overlayToggleKey` and `commentToggleKey`:
 
 1. Per-call parameter (if provided)
 2. Matching env var (`PI_ASK_USER_OVERLAY_TOGGLE_KEY` / `PI_ASK_USER_COMMENT_TOGGLE_KEY`)
-3. Built-in defaults: `alt+o` and `ctrl+g`
+3. Matching key in `ask-user.json` (`overlayToggleKey` / `commentToggleKey`)
+4. Built-in defaults: `alt+o` and `ctrl+g`
 
 Pass `"off"`, `"none"`, or `"disabled"` (at any level) to disable the shortcut entirely. Invalid specs are silently dropped and the next source is used. Specs follow the Pi-TUI [`KeyId`](https://github.com/earendil-works/pi-mono/blob/main/packages/tui/src/keys.ts) format: `[mod+]...key` where modifiers are `ctrl`, `shift`, `alt`, `super`, in any order, joined by `+` (e.g. `ctrl+g`, `alt+shift+x`, `escape`, `tab`).
 
@@ -234,7 +261,7 @@ A batch publishes nothing until the user submits it. Then each answered question
 { ...payload, batch: { index: number; total: number } }
 ```
 
-Set `PI_ASK_USER_EMIT_FULL_EVENTS=true` (or `1`, `yes`, `on`) to restore the full payloads — `context`, the offered `options` on cancel, and the complete `response` including selections, comment, and freeform text. Leave it unset unless another extension you trust needs the answer itself; the full response is always available to the agent through the tool result's `details`.
+Set `PI_ASK_USER_EMIT_FULL_EVENTS=true` (or `1`, `yes`, `on`), or `"emitFullEvents": true` in `ask-user.json`, to restore the full payloads — `context`, the offered `options` on cancel, and the complete `response` including selections, comment, and freeform text. Leave it unset unless another extension you trust needs the answer itself; the full response is always available to the agent through the tool result's `details`.
 
 ## Known limitations
 
