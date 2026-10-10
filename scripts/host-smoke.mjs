@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { findPackageJSON } from "node:module";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { stripVTControlCharacters } from "node:util";
 import { createEventBus } from "@earendil-works/pi-coding-agent";
 
 const hostEntry = import.meta.resolve("@earendil-works/pi-coding-agent");
@@ -161,6 +162,98 @@ for (const title of ["Alpha", "日本語 😀 café"]) {
    });
    assert.deepEqual(rendered.details.response, { kind: "selection", selections: [title] });
 }
+// Long option details must stay readable without taking over the prompt's paging keys.
+const detailLines = Array.from({ length: 40 }, (_, n) => `DETAIL_${String(n).padStart(2, "0")} 日本語 😀 café`);
+const longContext = Array.from({ length: 40 }, (_, n) => `CONTEXT_${String(n).padStart(2, "0")}`).join("\n\n");
+for (const displayMode of ["overlay", "inline"]) {
+   for (const rows of [24, 8]) {
+      await tool.execute("smoke-details-scroll", {
+         question: "Choose one",
+         context: longContext,
+         options: [
+            { title: "First", description: detailLines.join("\n\n") },
+            { title: "Second", description: "A short description." },
+         ],
+         allowFreeform: true,
+         allowComment: false,
+         overlayToggleKey: "off",
+         contextExpanded: true,
+         singleSelectLayout: "auto",
+         displayMode,
+      }, undefined, undefined, {
+         hasUI: true,
+         ui: {
+            custom: async (factory) => {
+               let response;
+               const component = factory(
+                  { requestRender() {}, terminal: { rows } },
+                  theme, getKeybindings(), (value) => { response = value; },
+               );
+               const render = (width = 120) => {
+                  const lines = component.render(width);
+                  assert.ok(lines.length <= (rows === 24 ? 20 : 6), "Details must fit the height cap");
+                  assert.ok(lines.every((line) => visibleWidth(line) <= width), "Details must fit the width");
+                  return stripVTControlCharacters(lines.join("\n"));
+               };
+               const first = render();
+               if (rows === 24) assert.ok(first.includes("←/→ details"), "Overflow must show its scroll keys");
+               component.handleInput("\x1b[B");
+               const second = render();
+               component.handleInput("\x1b[A");
+               assert.equal(render(), first);
+
+               const seen = new Set();
+               for (let step = 0; step < 120; step++) {
+                  for (const match of render().matchAll(/DETAIL_\d+/g)) seen.add(match[0]);
+                  component.handleInput("\x1b[C");
+               }
+               assert.equal(seen.size, detailLines.length, "Right arrow must reach every detail line");
+               const bottom = render();
+               component.handleInput("\x1b[C");
+               assert.equal(render(), bottom, "Scrolling must stop at the end");
+               component.handleInput("\x1b[B");
+               assert.equal(render(), second, "Changing options must reset the details");
+               component.handleInput("\x1b[A");
+               assert.equal(render(), first);
+               component.handleInput("\x1b[C");
+               render();
+               component.handleInput("F");
+               render();
+               component.handleInput("\x1b");
+               assert.equal(render(), first, "Changing the filter must reset the details");
+
+               component.handleInput("\x1b[C");
+               render();
+               component.handleInput("\x1b[D");
+               assert.equal(render(), first, "Left arrow must scroll back up");
+               component.handleInput("\x1b[D");
+               assert.equal(render(), first, "Scrolling must stop at the beginning");
+               if (rows === 24) {
+                  component.handleInput("\x1b[6~");
+                  const paged = render();
+                  assert.notDeepEqual(paged.match(/CONTEXT_\d+/g), first.match(/CONTEXT_\d+/g));
+                  assert.deepEqual(paged.match(/DETAIL_\d+/g), first.match(/DETAIL_\d+/g), "PageDown must only scroll the prompt");
+                  component.handleInput("\x1b[5~");
+                  assert.equal(render(), first, "PageUp must still scroll the prompt");
+               }
+
+               component.handleInput("\x1b[C");
+               render();
+               const narrow = render(70);
+               component.handleInput("\x1b[C");
+               assert.equal(render(70), narrow, "Hidden details must not consume arrow input");
+               assert.equal(render(), first, "Restoring the details pane must start at the top");
+               component.handleInput("\x1b[C");
+               render();
+               component.handleInput("\r");
+               assert.deepEqual(response, { kind: "selection", selections: ["First"] });
+               return response;
+            },
+         },
+      });
+   }
+}
+
 // Short reviews: every answer must be reachable by scrolling, within the height
 // cap and the width, with real wrapping. Inline matches Pi's fullscreen dock.
 const longQuestion = (n) => `Question ${n}: which of these fairly long options should the service use?`;
