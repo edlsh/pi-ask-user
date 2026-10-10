@@ -200,6 +200,7 @@ While an `ask_user` prompt is open:
 | `enter` | Confirm the focused option, submit a freeform response, or submit/skip an optional comment. In a batch, confirming records the answer; on the review page it submits. |
 | `esc` | Clear the search filter, exit freeform/comment mode, or cancel the prompt. In a batch, cancelling cancels every question. |
 | `↑` / `↓`, `ctrl+k` / `ctrl+j` | Navigate options. `ctrl+k` / `ctrl+j` (vim-style) work while typing in searchable prompts without disturbing the filter. On a batch's review page they scroll the answers. |
+| `←` / `→` | Scroll overflowing details up/down by a page in wide single-select layouts. The details pane shows the visible line range. `PgUp` / `PgDn` still scroll the question/context. |
 | `tab` / `shift+tab` | Single question: move down/up through the options. Batch: switch to the next/previous question or the review page. |
 | `1`-`4` | Batch review page: jump back to that question. |
 

@@ -818,6 +818,10 @@ class WrappedSingleSelectList implements Component {
    private searchQuery = "";
    private commentEnabled = false;
    private maxVisibleRows = 12;
+   private previewContent = "";
+   private previewScrollOffset = 0;
+   private previewMaxScrollOffset = 0;
+   private previewPageRows = 1;
    private cachedWidth?: number;
    private cachedLines?: string[];
 
@@ -990,6 +994,7 @@ class WrappedSingleSelectList implements Component {
    }
 
    private buildPreviewLines(width: number, filteredOptions: QuestionOption[], maxLines: number): string[] {
+      this.previewMaxScrollOffset = 0;
       if (maxLines <= 0) return [];
 
       const mdTheme = safeMarkdownTheme();
@@ -1025,6 +1030,11 @@ class WrappedSingleSelectList implements Component {
          }
       }
 
+      if (md !== this.previewContent) {
+         this.previewContent = md;
+         this.previewScrollOffset = 0;
+      }
+
       let lines: string[];
       if (mdTheme) {
          const mdComponent = new Markdown(md.trim(), 0, 0, mdTheme);
@@ -1040,11 +1050,16 @@ class WrappedSingleSelectList implements Component {
          lines.pop();
       }
 
-      if (lines.length <= maxLines) return lines;
-      if (maxLines === 1) return [truncateToWidth(this.theme.fg("dim", "…"), width, "")];
-
-      const visibleLines = lines.slice(0, maxLines - 1);
-      visibleLines.push(truncateToWidth(this.theme.fg("dim", "…"), width, ""));
+      const contentRows = lines.length > maxLines ? Math.max(1, maxLines - 1) : maxLines;
+      this.previewMaxScrollOffset = Math.max(0, lines.length - contentRows);
+      this.previewScrollOffset = Math.min(this.previewScrollOffset, this.previewMaxScrollOffset);
+      this.previewPageRows = Math.max(1, contentRows - 1);
+      const visibleLines = lines.slice(this.previewScrollOffset, this.previewScrollOffset + contentRows);
+      if (this.previewMaxScrollOffset > 0 && maxLines > 1) {
+         const end = this.previewScrollOffset + visibleLines.length;
+         const hint = `←/→ details ${this.previewScrollOffset + 1}-${end}/${lines.length}`;
+         visibleLines.push(truncateToWidth(this.theme.fg("dim", hint), width, ""));
+      }
       return visibleLines;
    }
 
@@ -1115,6 +1130,16 @@ class WrappedSingleSelectList implements Component {
          return;
       }
 
+      if (this.previewMaxScrollOffset > 0 && (matchesKey(data, Key.left) || matchesKey(data, Key.right))) {
+         const direction = matchesKey(data, Key.left) ? -1 : 1;
+         this.previewScrollOffset = Math.max(0, Math.min(
+            this.previewScrollOffset + direction * this.previewPageRows,
+            this.previewMaxScrollOffset,
+         ));
+         this.invalidate();
+         return;
+      }
+
       const printableInput = this.getPrintableInput(data);
       if (printableInput) {
          this.setSearchQuery(this.searchQuery + printableInput);
@@ -1134,6 +1159,8 @@ class WrappedSingleSelectList implements Component {
       let lines: string[];
 
       if (!splitPane) {
+         this.previewScrollOffset = 0;
+         this.previewMaxScrollOffset = 0;
          lines = this.buildListLines(width, filteredOptions);
       } else {
          const listLines = this.buildListLines(splitPane.left, filteredOptions, true);
