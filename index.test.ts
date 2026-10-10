@@ -1,10 +1,16 @@
-import { beforeAll, describe, expect, mock, onTestFinished, spyOn, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, mock, onTestFinished, spyOn, test } from "bun:test";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { getEventListeners } from "node:events";
 import type { StringEnumBuilder } from "./index";
 
 let editorInputs: string[] = [];
 let editorText = "";
 let emittedEvents: Array<{ name: string; payload: any }> = [];
+
+let isolatedAgentDir: string;
+let originalAgentDir: string | undefined;
 
 function wrapPlainText(text: string, width = 80): string[] {
    const lines: string[] = [];
@@ -203,6 +209,23 @@ beforeAll(() => {
          Unsafe: (value: unknown) => value,
       },
    }));
+
+   // Isolate preference resolution from the developer's real agent directory,
+   // even when PI_CODING_AGENT_DIR points at a configured one: a local
+   // ask-user.json must not leak into overlay/layout defaults. Tests that
+   // exercise the settings file point this at their own temp directory via
+   // stubEnv, which restores this baseline afterwards.
+   isolatedAgentDir = mkdtempSync(join(tmpdir(), "ask-user-test-agent-dir-"));
+   originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+   process.env.PI_CODING_AGENT_DIR = isolatedAgentDir;
+});
+
+afterAll(() => {
+   if (originalAgentDir === undefined) {
+      delete process.env.PI_CODING_AGENT_DIR;
+   } else {
+      process.env.PI_CODING_AGENT_DIR = originalAgentDir;
+   }
 });
 
 type RegisteredTool = {
@@ -3882,5 +3905,218 @@ describe("questions batch", () => {
 
       expect(render({ ...details, answers: [], cancelled: true }, false)).toBe("Cancelled");
       expect(render(details, false, { isError: true })).toBe("✗ boom");
+   });
+
+   describe("ask-user.json settings file", () => {
+      function stubSettingsFile(contents: string): void {
+         const dir = mkdtempSync(join(tmpdir(), "ask-user-agent-dir-"));
+         writeFileSync(join(dir, "ask-user.json"), contents, "utf8");
+         stubEnv("PI_CODING_AGENT_DIR", dir);
+      }
+
+      async function executeWithCapturedOptions(params: Record<string, unknown>): Promise<any> {
+         const tool = await setupTool();
+         let capturedOptions: any;
+         await tool.execute(
+            "tool-call-id",
+            { question: "Which option should we use?", options: ["A", "B"], ...params },
+            undefined,
+            undefined,
+            {
+               hasUI: true,
+               ui: {
+                  custom: async (_factory: any, options: any) => {
+                     capturedOptions = options;
+                     return null;
+                  },
+               },
+            },
+         );
+         return capturedOptions;
+      }
+
+      test("uses ask-user.json displayMode when the env var and call-level value are unset", async () => {
+         stubSettingsFile(JSON.stringify({ displayMode: "inline" }));
+         const capturedOptions = await executeWithCapturedOptions({});
+         expect(capturedOptions).toBeUndefined();
+      });
+
+      test("PI_ASK_USER_DISPLAY_MODE env var overrides ask-user.json", async () => {
+         stubSettingsFile(JSON.stringify({ displayMode: "overlay" }));
+         stubEnv("PI_ASK_USER_DISPLAY_MODE", "inline");
+         const capturedOptions = await executeWithCapturedOptions({});
+         expect(capturedOptions).toBeUndefined();
+      });
+
+      test("call-level displayMode overrides ask-user.json", async () => {
+         stubSettingsFile(JSON.stringify({ displayMode: "inline" }));
+         const capturedOptions = await executeWithCapturedOptions({ displayMode: "overlay" });
+         expect(capturedOptions.overlay).toBe(true);
+      });
+
+      test("ignores unrecognised ask-user.json displayMode and falls back to overlay", async () => {
+         stubSettingsFile(JSON.stringify({ displayMode: "fullscreen" }));
+         const capturedOptions = await executeWithCapturedOptions({});
+         expect(capturedOptions.overlay).toBe(true);
+      });
+
+      test("malformed ask-user.json fails the call with the file path", async () => {
+         stubSettingsFile("{ not json");
+         const tool = await setupTool();
+         await expect(
+            tool.execute(
+               "tool-call-id",
+               { question: "Which option should we use?", options: ["A", "B"] },
+               undefined,
+               undefined,
+               { hasUI: true, ui: { custom: async () => null } },
+            ),
+         ).rejects.toThrow(/ask-user\.json/);
+      });
+
+      async function renderSingleSelectWithSettings(params: Record<string, unknown> = {}): Promise<string> {
+         const tool = await setupTool();
+         let rendered = "";
+         await tool.execute(
+            "tool-call-id",
+            {
+               question: "Which option should we use?",
+               options: [{ title: "Alpha", description: "Alpha details." }],
+               ...params,
+            },
+            undefined,
+            undefined,
+            {
+               hasUI: true,
+               ui: {
+                  custom: async (factory: unknown) => {
+                     rendered = renderSingleSelectFromFactory(factory);
+                     return null;
+                  },
+               },
+            },
+         );
+         return rendered;
+      }
+
+      test("applies singleSelectLayout from ask-user.json when the env var is unset", async () => {
+         stubSettingsFile(JSON.stringify({ singleSelectLayout: "list" }));
+         const rendered = await renderSingleSelectWithSettings();
+         expect(rendered).not.toContain("## Alpha");
+      });
+
+      test("PI_ASK_USER_SINGLE_SELECT_LAYOUT=auto overrides ask-user.json singleSelectLayout", async () => {
+         stubSettingsFile(JSON.stringify({ singleSelectLayout: "list" }));
+         stubEnv("PI_ASK_USER_SINGLE_SELECT_LAYOUT", "auto");
+         const rendered = await renderSingleSelectWithSettings();
+         expect(rendered).toContain("## Alpha");
+      });
+
+      test("valid overlayToggleKey in ask-user.json replaces the default alt+o", async () => {
+         stubSettingsFile(JSON.stringify({ overlayToggleKey: "alt+h" }));
+         const tool = await setupTool();
+         const calls: boolean[] = [];
+         let inputHandler: ((data: string) => any) | undefined;
+
+         await tool.execute(
+            "tool-call-id",
+            { question: "Q", options: ["A"] },
+            undefined,
+            undefined,
+            {
+               hasUI: true,
+               ui: {
+                  custom: async (_factory: any, options: any) => {
+                     options.onHandle?.({
+                        hide() { },
+                        setHidden(value: boolean) { calls.push(value); },
+                        isHidden() { return false; },
+                        focus() { },
+                     });
+                     const ignored = inputHandler?.("alt+o");
+                     const consumed = inputHandler?.("alt+h");
+                     expect(ignored).toBeUndefined();
+                     expect(consumed).toEqual({ consume: true });
+                     return null;
+                  },
+                  onTerminalInput: (handler: (data: string) => any) => {
+                     inputHandler = handler;
+                     return () => { };
+                  },
+                  notify: () => { },
+               },
+            },
+         );
+
+         expect(calls).toEqual([true]);
+      });
+
+      test("invalid overlayToggleKey in ask-user.json falls back to the default alt+o", async () => {
+         stubSettingsFile(JSON.stringify({ overlayToggleKey: "alt+ space" }));
+         const tool = await setupTool();
+         const calls: boolean[] = [];
+         let inputHandler: ((data: string) => any) | undefined;
+
+         await tool.execute(
+            "tool-call-id",
+            { question: "Q", options: ["A"] },
+            undefined,
+            undefined,
+            {
+               hasUI: true,
+               ui: {
+                  custom: async (_factory: any, options: any) => {
+                     options.onHandle?.({
+                        hide() { },
+                        setHidden(value: boolean) { calls.push(value); },
+                        isHidden() { return false; },
+                        focus() { },
+                     });
+                     const consumed = inputHandler?.("alt+o");
+                     expect(consumed).toEqual({ consume: true });
+                     return null;
+                  },
+                  onTerminalInput: (handler: (data: string) => any) => {
+                     inputHandler = handler;
+                     return () => { };
+                  },
+                  notify: () => { },
+               },
+            },
+         );
+
+         expect(calls).toEqual([true]);
+      });
+
+      test("invalid commentToggleKey in ask-user.json falls back to the default ctrl+g", async () => {
+         stubSettingsFile(JSON.stringify({ commentToggleKey: "alt+ space" }));
+         const tool = await setupTool();
+         let renderedAfter = "";
+
+         await tool.execute(
+            "tool-call-id",
+            { question: "Q", options: ["Alpha", "Beta"], allowComment: true },
+            undefined,
+            undefined,
+            {
+               hasUI: true,
+               ui: {
+                  custom: async (factory: any) => {
+                     const component = factory(
+                        { requestRender() { }, terminal: { rows: 24 } },
+                        createTheme(),
+                        createKeybindings(),
+                        () => { },
+                     );
+                     component.handleInput("ctrl+g");
+                     renderedAfter = ((component as any).singleSelectList as any).render(80).join("\n");
+                     return null;
+                  },
+               },
+            },
+         );
+
+         expect(renderedAfter).toContain("[✓] Add extra context after selection");
+      });
    });
 });

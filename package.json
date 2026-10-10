@@ -35,6 +35,7 @@
   },
   "files": [
     "index.ts",
+    "settings.ts",
     "single-select-layout.ts",
     "skills",
     "README.md",
