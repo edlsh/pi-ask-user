@@ -45,9 +45,10 @@
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "check:host": "node scripts/host-smoke.mjs",
+    "check:interactions": "node --test scripts/interaction-smoke.mjs",
     "check:docs": "node scripts/check-doc-examples.mjs",
     "check:package": "node scripts/check-package.mjs",
-    "check": "bun run test && bun run typecheck && bun run check:host && bun run check:docs && bun run check:package"
+    "check": "bun run test && bun run typecheck && bun run check:host && bun run check:interactions && bun run check:docs && bun run check:package"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "1.0.2",

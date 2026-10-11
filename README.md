@@ -12,7 +12,9 @@ High-quality video: [ask-user-demo.mp4](https://github.com/edlsh/pi-ask-user/blo
 
 - Searchable single-select option lists with wrapped titles and descriptions
 - Responsive split-pane details preview on wide terminals, with a persistent single-column preference
-- Multi-select option lists
+- Multi-select option lists that retain checked options when you add a custom answer
+- Separate short descriptions and scrollable Markdown previews
+- Custom-answer and comment editing in Pi's configured external editor
 - Batches of 2-4 independent questions in one prompt, with a review page before submitting
 - Optional freeform responses
 - User-toggleable extra context on structured selections
@@ -65,7 +67,7 @@ The registered tool name is:
 | `question` | `string?` | — | The question to ask the user. Each call needs exactly one of `question` or `questions` |
 | `questions` | `{question, context?, options?, allowMultiple?, allowFreeform?}[]?` | — | 2-4 independent questions shown together, used instead of `question`. Set `context`, `options`, `allowMultiple`, and `allowFreeform` on each entry; passing them at the top level as well is an error. The remaining parameters apply to the whole batch. See [Asking several questions at once](#asking-several-questions-at-once) |
 | `context` | `string?` | — | Relevant context summary shown before the question |
-| `options` | `{title, description?}[]?` | `[]` | Multiple-choice options. The schema is a flat object shape (no `anyOf`, which some provider proxies strip or reject); plain strings and common alias keys (`label`, `text`, `value`, `name`, `option`) are still accepted at runtime |
+| `options` | `{title, description?, preview?}[]?` | `[]` | Multiple-choice options. The schema is a flat object shape (no `anyOf`, which some provider proxies strip or reject); plain strings and common alias keys (`label`, `text`, `value`, `name`, `option`) are still accepted at runtime |
 | `allowMultiple` | `boolean?` | `false` | Enable multi-select mode |
 | `allowFreeform` | `boolean?` | `true` | Add a "Type something" freeform option |
 | `allowComment` | `boolean?` | env var or `false` | Expose a user-toggleable extra-context option in the custom UI (`ctrl+g` or the toggle row) and collect an optional comment in fallback dialogs |
@@ -94,6 +96,28 @@ The registered tool name is:
 ```
 
 `displayMode: "inline"` uses the same interaction logic but skips overlay mode when calling `ctx.ui.custom(...)`. RPC/headless fallback behavior is unchanged.
+
+## Detailed option previews
+
+For single-select questions, keep `description` short and put longer explanations or code in `preview`. The summary stays in the option list. The preview uses the scrollable details pane, or appears below the choices in narrow terminals and the list layout.
+
+```json
+{
+  "question": "Which cache should we use?",
+  "options": [
+    {
+      "title": "In memory",
+      "description": "Keep entries within one process.",
+      "preview": "```ts\nconst cache = new Map<string, string>();\n```"
+    },
+    {
+      "title": "Shared cache",
+      "description": "Share entries across processes.",
+      "preview": "Store cached entries in a shared service."
+    }
+  ]
+}
+```
 
 ## Asking several questions at once
 
@@ -194,16 +218,42 @@ While an `ask_user` prompt is open:
 
 | Key | Action |
 |-----|--------|
+| `ctrl+a` | Enter or leave popup resize mode. Use `j` / `k` for height and `l` / `h` for width. |
 | `alt+o` (configurable via `overlayToggleKey`) | Hide/show the overlay popup so you can read the agent's prior output. Available in `overlay` mode only. The first time you hide it, a notification reminds you which key brings it back. |
-| `ctrl+g` (configurable via `commentToggleKey`) | Toggle the optional comment/extra-context row (when `allowComment: true`). |
+| `ctrl+g` (configurable via `commentToggleKey`) | While choosing an option, toggle the optional comment/extra-context row (when `allowComment: true`). |
+| `ctrl+g` (Pi's `app.editor.external` binding) | While writing a custom answer or comment, open Pi's configured external editor. Save and close it to return to the draft; Enter submits the answer. |
 | `ctrl+e` | Expand or collapse oversized context while choosing an option. If another configured ask shortcut owns it, the prompt shows `ctrl+x` or `ctrl+y` instead. |
 | `enter` | Confirm the focused option, submit a freeform response, or submit/skip an optional comment. In a batch, confirming records the answer; on the review page it submits. |
 | `esc` | Clear the search filter, exit freeform/comment mode, or cancel the prompt. In a batch, cancelling cancels every question. |
 | `↑` / `↓`, `ctrl+k` / `ctrl+j` | Navigate options. `ctrl+k` / `ctrl+j` (vim-style) work while typing in searchable prompts without disturbing the filter. On a batch's review page they scroll the answers. |
+| `←` / `→` | Scroll overflowing single-select details up/down by a page. The details pane shows the visible line range. `PgUp` / `PgDn` still scroll the question/context. |
 | `tab` / `shift+tab` | Single question: move down/up through the options. Batch: switch to the next/previous question or the review page. |
 | `1`-`4` | Batch review page: jump back to that question. |
 
 If you prefer never to see the overlay, set `displayMode: "inline"` per call or `PI_ASK_USER_DISPLAY_MODE=inline` globally.
+
+### Resize the popup
+
+Press `Ctrl+A`, then use:
+
+- `j` to make the popup one row taller, or `k` to make it shorter.
+- `l` to make it two columns wider, or `h` to make it narrower.
+
+Press Enter, Esc, or Ctrl+A to return to answering. Leaving resize mode does not submit or cancel the question. Held resize keys keep adjusting the size, within the available terminal area.
+
+The extra height goes to the choices, details, or answer editor. Checked options and drafts stay intact. The size lasts for the current prompt, including its question and review pages.
+
+Ctrl+A is the resize prefix inside popups, including answer and comment editors. Inline mode keeps its normal Ctrl+A line-start behavior.
+
+### Custom answers and comments
+
+In multi-select mode, checked options stay selected when you open `Type something.`. Submitting custom text sends both the checked options and that text. Going back preserves the checkmarks and your draft. An empty custom answer submits the checked options without adding text.
+
+Comment drafts survive returning to the option list and choosing another option.
+
+Questions without options open in the answer editor. Press Esc to read the whole question and context, then Enter to return to your draft. A second Esc cancels the question.
+
+The external-editor shortcut uses Pi's `externalEditor` setting, then `VISUAL` or `EDITOR`, with the same fallback as Pi. An editor failure leaves the draft unchanged. Cancelling or timing out the prompt stops the editor process and restores the terminal. On Windows, the prompt waits for you to close the editor first, as Pi's own external editor does.
 
 ### Cancellation
 
@@ -242,7 +292,7 @@ Set `PI_ASK_USER_EMIT_FULL_EVENTS=true` (or `1`, `yes`, `on`) to restore the ful
 
 ## Result details
 
-Answers and cancellations include structured prompt `details` for rendering and session state reconstruction:
+Answers and cancellations include structured prompt `details` for rendering and session state reconstruction. A combined checkbox/custom answer has `kind: "selection"`, with the checked labels followed by the custom text in `selections`. A custom answer without checked options keeps `kind: "freeform"`:
 
 ```typescript
 type AskResponse =
