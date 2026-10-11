@@ -41,7 +41,11 @@ import {
 } from "@earendil-works/pi-tui";
 import { renderSingleSelectRows, type QuestionOption } from "./single-select-layout";
 
+import { spawn } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 const _require = createRequire(import.meta.url);
 const ASK_USER_VERSION: string = (_require("./package.json") as { version: string }).version;
 
@@ -121,6 +125,61 @@ function safeMarkdownTheme(): MarkdownTheme | undefined {
    }
 }
 
+async function editAnswerInExternalEditor(ctx: ExtensionContext, tui: TUI, value: string, signal: AbortSignal) {
+   let directory: string | undefined;
+   let stopped = false;
+   try {
+      if (signal.aborted) return undefined;
+      const { SettingsManager } = await import("@earendil-works/pi-coding-agent");
+      if (signal.aborted) return undefined;
+      // Older Pi versions use VISUAL/EDITOR and do not expose the configured-editor getter.
+      const createSettings = SettingsManager.create as (
+         cwd: string, agentDir?: string, options?: { projectTrusted: boolean },
+      ) => ReturnType<typeof SettingsManager.create> & { getExternalEditorCommand?: () => string };
+      const projectTrusted = "isProjectTrusted" in ctx && typeof ctx.isProjectTrusted === "function"
+         && ctx.isProjectTrusted() === true;
+      const settings = createSettings(ctx.cwd, undefined, { projectTrusted });
+      const command = settings.getExternalEditorCommand?.()
+         || process.env.VISUAL || process.env.EDITOR || (process.platform === "win32" ? "notepad" : "nano");
+      const [editor, ...args] = command.split(" ");
+      if (!editor) throw new Error("No external editor is configured");
+      directory = mkdtempSync(join(tmpdir(), "pi-ask-user-"));
+      const file = join(directory, "answer.md");
+      writeFileSync(file, value, { encoding: "utf8", mode: 0o600 });
+      tui.stop();
+      stopped = true;
+      await new Promise<void>((resolve, reject) => {
+         const child = spawn(editor, [...args, file], {
+            stdio: "inherit", shell: process.platform === "win32", signal,
+         });
+         let failure: Error | undefined;
+         child.once("error", (error) => { failure = error; });
+         child.once("close", (code, childSignal) => {
+            if (failure) reject(failure);
+            else if (code === 0) resolve();
+            else reject(new Error(`Editor exited with ${childSignal ? `signal ${childSignal}` : `code ${code}`}`));
+         });
+      });
+      if (signal.aborted) return undefined;
+      return readFileSync(file, "utf8").replace(/^\uFEFF/, "").replace(/\r?\n$/, "");
+   } catch (error) {
+      if (!signal.aborted) {
+         ctx.ui.notify(`External editor failed: ${error instanceof Error ? error.message : String(error)}. Your draft is unchanged.`, "error");
+      }
+      return undefined;
+   } finally {
+      if (directory) {
+         try { rmSync(directory, { recursive: true, force: true }); }
+         catch { ctx.ui.notify("Could not remove temporary editor files.", "warning"); }
+      }
+      if (stopped) {
+         tui.start();
+         tui.requestRender(true);
+      }
+   }
+}
+
+type EditText = (value: string) => Promise<string | undefined>;
 type AskOptionInput = QuestionOption | string;
 
 type AskDisplayMode = "overlay" | "inline";
@@ -217,7 +276,8 @@ function coerceOption(option: unknown): QuestionOption | null {
          if (typeof value === "string" && value.trim()) {
             const description =
                typeof record.description === "string" && record.description.trim() ? record.description : undefined;
-            return description ? { title: value.trim(), description } : { title: value.trim() };
+            const preview = typeof record.preview === "string" && record.preview.trim() ? record.preview : undefined;
+            return { title: value.trim(), ...(description ? { description } : {}), ...(preview ? { preview } : {}) };
          }
       }
    }
@@ -458,6 +518,8 @@ const FREEFORM_SENTINEL = "\u270f\ufe0f Type custom response...";
 const COMMENT_TOGGLE_LABEL = "Add extra context after selection";
 const DEFAULT_OVERLAY_TOGGLE_KEY = "alt+o";
 const DEFAULT_COMMENT_TOGGLE_KEY = "ctrl+g";
+const POPUP_RESIZE_KEY = Key.ctrl("a");
+const POPUP_RESIZE_HINT = "h/l width · k/j height · Esc done";
 const CONTEXT_TOGGLE_KEYS = [Key.ctrl("e"), Key.ctrl("x"), Key.ctrl("y")];
 const INLINE_CONTEXT_MAX_ROWS = 3;
 
@@ -530,6 +592,71 @@ function buildCustomUIOptions(
             ...(onHandle ? { onHandle } : {}),
          };
       }
+   }
+}
+
+class PopupResize {
+   active = false;
+   rows?: number;
+   extraRows = 0;
+   private width = 0;
+   private height = 0;
+   private ignoreExitRepeats = false;
+
+   constructor(
+      private tui: TUI,
+      private options: OverlayOptions,
+      private keybindings: KeybindingsManager,
+      private isEditing: () => boolean,
+   ) { }
+
+   record(width: number, height: number) {
+      this.width = width;
+      this.height = height;
+   }
+
+   private availableRows() {
+      const rows = Number.isFinite(this.tui.terminal.rows) ? Math.floor(this.tui.terminal.rows) : 24;
+      return Math.max(1, rows - 2);
+   }
+
+   maxRows() {
+      return Math.min(this.rows ?? getOverlayMaxRenderLinesForRows(this.tui.terminal.rows), this.availableRows());
+   }
+
+   handleInput(data: string) {
+      if (this.isEditing() || isKeyRelease(data)) return true;
+      const exitKey = matchesKey(data, Key.enter) || matchesKey(data, Key.escape);
+      if (this.ignoreExitRepeats && isKeyRepeat(data) && exitKey) return true;
+      if (!isKeyRepeat(data)) this.ignoreExitRepeats = false;
+      if (matchesKey(data, POPUP_RESIZE_KEY)) {
+         if (!isKeyRepeat(data)) {
+            this.active = !this.active;
+            this.rows ??= this.height || this.maxRows();
+            this.options.maxHeight = this.rows;
+         }
+         return true;
+      }
+      if (!this.active) return false;
+      if (exitKey) {
+         this.active = false;
+         this.ignoreExitRepeats = true;
+         return true;
+      }
+      const dx = matchesKey(data, "h") ? -2 : matchesKey(data, "l") ? 2 : 0;
+      const dy = matchesKey(data, "k") ? -1 : matchesKey(data, "j") ? 1 : 0;
+      if (dx === 0 && dy === 0) return !this.keybindings.matches(data, "tui.select.cancel");
+      const availableWidth = Number.isFinite(this.tui.terminal.columns)
+         ? Math.max(1, Math.floor(this.tui.terminal.columns) - 2) : Math.max(1, this.width || 80);
+      const width = Math.max(Math.min(ASK_OVERLAY_MIN_WIDTH, availableWidth), Math.min(this.width + dx, availableWidth));
+      const height = Math.max(Math.min(ASK_OVERLAY_MIN_RENDER_LINES, this.availableRows()),
+         Math.min((this.height || this.maxRows()) + dy, this.availableRows()));
+      this.extraRows += height - (this.height || this.maxRows());
+      this.rows = height;
+      this.options.width = width;
+      this.options.maxHeight = height;
+      this.record(width, height);
+      return true;
    }
 }
 
@@ -617,6 +744,13 @@ class MultiSelectList implements Component {
       this.invalidate();
    }
 
+   getCheckedSelections() {
+      return Array.from(this.checked)
+         .sort((a, b) => a - b)
+         .map((i) => this.options[i]?.title)
+         .filter((title): title is string => !!title);
+   }
+
    handleInput(data: string): void {
       if (this.keybindings.matches(data, "tui.select.cancel")) {
          this.onCancel?.();
@@ -681,10 +815,7 @@ class MultiSelectList implements Component {
             return;
          }
 
-         const selectedTitles = Array.from(this.checked)
-            .sort((a, b) => a - b)
-            .map((i) => this.options[i]?.title)
-            .filter((t): t is string => !!t);
+         const selectedTitles = this.getCheckedSelections();
 
          const fallback = this.options[this.selectedIndex]?.title;
          const result = selectedTitles.length > 0 ? selectedTitles : fallback ? [fallback] : [];
@@ -959,7 +1090,7 @@ class WrappedSingleSelectList implements Component {
       return { left, right };
    }
 
-   private buildListLines(width: number, filteredOptions: QuestionOption[], hideDescriptions = false): string[] {
+   private buildListLines(width: number, filteredOptions: QuestionOption[], hideDescriptions = false, maxVisibleRows = this.maxVisibleRows): string[] {
       const lines: string[] = [];
       const count = this.getItemCount(filteredOptions);
       const searchValue = this.searchQuery ? this.theme.fg("text", this.searchQuery) : this.theme.fg("dim", "type to filter");
@@ -973,10 +1104,10 @@ class WrappedSingleSelectList implements Component {
          if (!this.searchQuery) {
             lines.push(truncateToWidth(this.theme.fg("warning", "No options"), width, ""));
          }
-         return lines.slice(0, this.maxVisibleRows);
+         return lines.slice(0, maxVisibleRows);
       }
 
-      const maxRows = Math.max(1, this.maxVisibleRows - lines.length);
+      const maxRows = Math.max(1, maxVisibleRows - lines.length);
       const optionRows = renderSingleSelectRows({
          options: filteredOptions,
          selectedIndex: this.selectedIndex,
@@ -990,7 +1121,7 @@ class WrappedSingleSelectList implements Component {
       const optionLines = optionRows.map((row) => this.styleListLine(row.line, width, row.selected));
 
       lines.push(...optionLines);
-      return lines.slice(0, this.maxVisibleRows);
+      return lines.slice(0, maxVisibleRows);
    }
 
    private buildPreviewLines(width: number, filteredOptions: QuestionOption[], maxLines: number): string[] {
@@ -1018,8 +1149,9 @@ class WrappedSingleSelectList implements Component {
             md += "*No option selected*\n";
          } else {
             md += `## ${selected.title}\n\n`;
-            if (selected.description?.trim()) {
-               md += `${selected.description}\n`;
+            const details = selected.preview?.trim() ? selected.preview : selected.description;
+            if (details?.trim()) {
+               md += `${details}\n`;
             } else {
                md += "*No additional details provided for this option.*\n";
             }
@@ -1159,11 +1291,20 @@ class WrappedSingleSelectList implements Component {
       let lines: string[];
 
       if (!splitPane) {
-         this.previewScrollOffset = 0;
-         this.previewMaxScrollOffset = 0;
-         lines = this.buildListLines(width, filteredOptions);
+         if (filteredOptions[this.selectedIndex]?.preview?.trim() && this.maxVisibleRows >= 3) {
+            const gap = this.maxVisibleRows >= 4 ? 1 : 0;
+            const listRows = Math.max(2, Math.ceil((this.maxVisibleRows - gap) / 2));
+            const listLines = this.buildListLines(width, filteredOptions, false, listRows);
+            const previewRows = this.maxVisibleRows - listLines.length - gap;
+            lines = [...listLines, ...(gap ? [""] : []), ...this.buildPreviewLines(width, filteredOptions, previewRows)];
+         } else {
+            this.previewScrollOffset = 0;
+            this.previewMaxScrollOffset = 0;
+            lines = this.buildListLines(width, filteredOptions);
+         }
       } else {
-         const listLines = this.buildListLines(splitPane.left, filteredOptions, true);
+         const hideDescriptions = !filteredOptions.some((option) => option.preview?.trim());
+         const listLines = this.buildListLines(splitPane.left, filteredOptions, hideDescriptions);
          const previewLines = this.buildPreviewLines(splitPane.right, filteredOptions, this.maxVisibleRows);
          const rowCount = Math.min(this.maxVisibleRows, Math.max(listLines.length, previewLines.length));
          const separator = this.theme.fg("dim", SINGLE_SELECT_SPLIT_PANE_SEPARATOR);
@@ -1199,6 +1340,9 @@ class AskComponent extends Container {
    private keybindings: KeybindingsManager;
    private shortcuts: ResolvedAskShortcuts;
    private onDone: (result: AskUIResult | null) => void;
+   private editText?: EditText;
+   private resize?: PopupResize;
+   private editingExternally = false;
 
    private mode: AskMode = "select";
    private pendingSelections: string[] = [];
@@ -1252,6 +1396,8 @@ class AskComponent extends Container {
       keybindings: KeybindingsManager,
       shortcuts: ResolvedAskShortcuts,
       onDone: (result: AskUIResult | null) => void,
+      editText?: EditText,
+      resize?: PopupResize,
    ) {
       super();
 
@@ -1269,6 +1415,8 @@ class AskComponent extends Container {
       this.keybindings = keybindings;
       this.shortcuts = shortcuts;
       this.onDone = onDone;
+      this.editText = editText;
+      this.resize = resize;
 
       // Layout skeleton
       this.addChild(new BoxBorderTop(
@@ -1313,8 +1461,7 @@ class AskComponent extends Container {
       ));
 
       this.updateStaticText();
-      // Batch questions without options open straight in the editor, like
-      // the input dialog a single question without options uses.
+      // Questions without options open straight in the editor.
       if (this.options.length === 0) {
          this.showFreeformMode();
       } else {
@@ -1332,7 +1479,9 @@ class AskComponent extends Container {
       const innerWidth = Math.max(1, width - BOX_BORDER_OVERHEAD);
 
       if (this.displayMode === "overlay") {
-         return this.renderOverlayLayout(width, innerWidth);
+         const lines = this.renderOverlayLayout(width, innerWidth);
+         this.resize?.record(width, lines.length);
+         return lines;
       }
 
       if (this.mode === "select" && !this.allowMultiple) {
@@ -1359,6 +1508,7 @@ class AskComponent extends Container {
    }
 
    private getOverlayMaxRenderLines(): number {
+      if (this.resize) return this.resize.maxRows();
       const rows = Number.isFinite(this.tui.terminal.rows) ? Math.floor(this.tui.terminal.rows) : 24;
       return getOverlayMaxRenderLinesForRows(rows);
    }
@@ -1426,6 +1576,10 @@ class AskComponent extends Container {
          }
       }
 
+      if (this.resize?.rows !== undefined && promptBudget > promptLines.length) {
+         modeBudget += promptBudget - promptLines.length;
+         promptBudget = promptLines.length;
+      }
       const modeLines = this.renderModeLines(innerWidth, modeBudget);
       if (modeLines.length < modeBudget) {
          promptBudget += modeBudget - modeLines.length;
@@ -1440,6 +1594,10 @@ class AskComponent extends Container {
          ...helpLines,
       ];
 
+      if (this.resize?.rows !== undefined) {
+         bodyLines.splice(bodyLines.length - helpLines.length, 0,
+            ...Array(Math.max(0, bodyCapacity - bodyLines.length)).fill(""));
+      }
       return this.frameBodyLines(bodyLines.slice(0, bodyCapacity), width, innerWidth);
    }
 
@@ -1518,9 +1676,8 @@ class AskComponent extends Container {
    }
 
    private getPreferredModeRows(): number {
-      if (this.mode === "freeform") return 10;
-      if (this.mode === "comment") return 11;
-      return 8;
+      const rows = this.mode === "freeform" ? 10 : this.mode === "comment" ? 11 : 8;
+      return Math.max(this.getMinimumModeRows(), rows + (this.resize?.extraRows ?? 0));
    }
 
    private renderModeLines(width: number, budget: number): string[] {
@@ -1564,6 +1721,9 @@ class AskComponent extends Container {
 
       return [
          ...new Text(this.theme.fg("accent", this.theme.bold("Custom response")), 1, 0).render(width),
+         ...(this.pendingSelections.length > 0
+            ? new Text(this.theme.fg("text", `Selected: ${this.pendingSelections.join(", ")}`), 1, 0).render(width)
+            : []),
          "",
       ];
    }
@@ -1669,7 +1829,7 @@ class AskComponent extends Container {
    private renderTopBorder(width: number): string {
       return new BoxBorderTop(
          (s: string) => this.theme.fg("accent", s),
-         this.frameTitle,
+         this.frameTitle + (this.resize?.active ? " [resize]" : ""),
          (s: string) => this.theme.fg("dim", this.theme.bold(s)),
       ).render(width)[0] ?? "";
    }
@@ -1677,7 +1837,7 @@ class AskComponent extends Container {
    private renderBottomBorder(width: number): string {
       return new BoxBorderBottom(
          (s: string) => this.theme.fg("accent", s),
-         `v${ASK_USER_VERSION}`,
+         `v${ASK_USER_VERSION}${this.resize && !this.resize.active ? " · ctrl+a resize" : ""}`,
          (s: string) => this.theme.fg("dim", s),
       ).render(width)[0] ?? "";
    }
@@ -1724,6 +1884,10 @@ class AskComponent extends Container {
 
    private updateHelpText(): void {
       const theme = this.theme;
+      if (this.resize?.active) {
+         this.helpText.setText(theme.fg("accent", POPUP_RESIZE_HINT));
+         return;
+      }
       const overlayHint = this.displayMode === "overlay" && !this.shortcuts.overlayToggle.disabled
          ? literalHint(theme, this.shortcuts.overlayToggle.spec, "hide")
          : null;
@@ -1748,6 +1912,7 @@ class AskComponent extends Container {
             this.navigationHint,
             keybindingHint(theme, this.keybindings, "tui.input.submit", this.mode === "comment" ? "submit/skip" : "submit"),
             keybindingHint(theme, this.keybindings, "tui.input.newLine", "newline"),
+            this.editText ? keybindingHint(theme, this.keybindings, "app.editor.external", "external editor") : null,
             literalHint(theme, "esc", this.options.length === 0 ? "cancel" : "back"),
             overlayHint,
             alternateCancelKeys.length > 0 ? literalHint(theme, formatKeyList(alternateCancelKeys), "cancel") : null,
@@ -1855,12 +2020,29 @@ class AskComponent extends Container {
       return editor;
    }
 
+   private async openExternalEditor() {
+      if (!this.editText || this.editingExternally) return;
+      this.editingExternally = true;
+      try {
+         const editor = this.ensureEditor();
+         const value = await this.editText(editor.getExpandedText?.() ?? editor.getText());
+         if (value !== undefined) {
+            this.setEditorText(value);
+            this.saveEditorDraft();
+            this.invalidate();
+            this.tui.requestRender();
+         }
+      } finally {
+         this.editingExternally = false;
+      }
+   }
+
    private saveEditorDraft(): void {
       if (!this.editor) return;
-      const getText = (this.editor as any).getText;
+      const getText = this.editor.getExpandedText ?? this.editor.getText;
       if (typeof getText !== "function") return;
 
-      const currentText = String(getText.call(this.editor) ?? "");
+      const currentText = getText.call(this.editor);
       if (this.mode === "freeform") {
          this.freeformDraft = currentText;
       } else if (this.mode === "comment") {
@@ -1879,7 +2061,6 @@ class AskComponent extends Container {
    private handleSelectionSubmit(selections: string[], wantsComment: boolean): void {
       if (this.allowComment && wantsComment) {
          this.pendingSelections = selections;
-         this.commentDraft = "";
          this.showCommentMode();
          return;
       }
@@ -1888,8 +2069,14 @@ class AskComponent extends Container {
    }
 
    private handleEditorSubmit(text: string): void {
+      // Editor clears its buffer before onSubmit; retain it for backtracking.
+      this.setEditorText(text);
       if (this.mode === "freeform") {
-         this.onDone(createFreeformResponse(text));
+         if (this.pendingSelections.length > 0) {
+            this.handleSelectionSubmit([...this.pendingSelections, text], this.ensureMultiSelectList().isCommentEnabled());
+         } else {
+            this.onDone(createFreeformResponse(text));
+         }
          return;
       }
 
@@ -1924,6 +2111,7 @@ class AskComponent extends Container {
          this.saveEditorDraft();
       }
 
+      this.pendingSelections = this.allowMultiple ? this.ensureMultiSelectList().getCheckedSelections() : [];
       this.mode = "freeform";
       this.modeContainer.clear();
 
@@ -1932,6 +2120,9 @@ class AskComponent extends Container {
       (editor as any).focused = this._focused;
 
       this.modeContainer.addChild(new Text(this.theme.fg("accent", this.theme.bold("Custom response")), 1, 0));
+      if (this.pendingSelections.length > 0) {
+         this.modeContainer.addChild(new Text(this.theme.fg("text", `Selected: ${this.pendingSelections.join(", ")}`), 1, 0));
+      }
       this.modeContainer.addChild(new Spacer(1));
       this.modeContainer.addChild(editor);
 
@@ -2017,6 +2208,12 @@ class AskComponent extends Container {
    }
 
    handleInput(data: string): void {
+      if (this.editingExternally) return;
+      if (this.resize?.handleInput(data)) {
+         this.invalidate();
+         this.tui.requestRender(true);
+         return;
+      }
       if (matchesKey(data, this.getContextToggleKey() as any) && this.toggleContext()) {
          return;
       }
@@ -2040,6 +2237,10 @@ class AskComponent extends Container {
             return;
          }
 
+         if (this.editText && this.keybindings.matches(data, "app.editor.external")) {
+            void this.openExternalEditor();
+            return;
+         }
          this.ensureEditor().handleInput(data);
          this.tui.requestRender();
          return;
@@ -2063,13 +2264,13 @@ const INLINE_DOCK_RESERVED_ROWS = 5;
 const REVIEW_MIN_CONTENT_ROWS = 3;
 
 /** Frame body lines in the ask_user box with the given title. */
-function frameBox(theme: Theme, title: string, bodyLines: string[], width: number): string[] {
+function frameBox(theme: Theme, title: string, bodyLines: string[], width: number, resize?: PopupResize): string[] {
    const innerWidth = Math.max(1, width - BOX_BORDER_OVERHEAD);
    const borderColor = (s: string) => theme.fg("accent", s);
    return [
       new BoxBorderTop(borderColor, title, (s: string) => theme.fg("dim", theme.bold(s))).render(width)[0] ?? "",
       ...bodyLines.map((line) => `${borderColor(BOX_BORDER_LEFT)}${truncateToWidth(line, innerWidth, "", true)}${borderColor(BOX_BORDER_RIGHT)}`),
-      new BoxBorderBottom(borderColor, `v${ASK_USER_VERSION}`, (s: string) => theme.fg("dim", s)).render(width)[0] ?? "",
+      new BoxBorderBottom(borderColor, `v${ASK_USER_VERSION}${resize && !resize.active ? " · ctrl+a resize" : ""}`, (s: string) => theme.fg("dim", s)).render(width)[0] ?? "",
    ];
 }
 
@@ -2096,6 +2297,8 @@ class BatchAskComponent implements Component {
       private theme: Theme,
       private keybindings: KeybindingsManager,
       private onDone: (answers: BatchAnswer[] | null) => void,
+      editText?: EditText,
+      private resize?: PopupResize,
    ) {
       this.answers = questions.map(() => undefined);
       this.pages = questions.map((entry, index) => new AskComponent(
@@ -2113,6 +2316,8 @@ class BatchAskComponent implements Component {
          keybindings,
          settings.shortcuts,
          (result) => this.handlePageDone(index, result),
+         editText,
+         resize,
       ));
       this.updateChrome();
    }
@@ -2132,10 +2337,18 @@ class BatchAskComponent implements Component {
 
    render(width: number): string[] {
       const page = this.pages[this.current];
-      return page ? page.render(width) : this.renderReview(width);
+      if (page) return page.render(width);
+      const lines = this.renderReview(width);
+      this.resize?.record(width, lines.length);
+      return lines;
    }
 
    handleInput(data: string): void {
+      if (this.resize?.handleInput(data)) {
+         this.invalidate();
+         this.tui.requestRender(true);
+         return;
+      }
       const pageCount = this.questions.length + 1;
       // Tab and shift+tab move between pages here; inside a page, arrows and
       // ctrl+j/k still move the option selection.
@@ -2255,7 +2468,7 @@ class BatchAskComponent implements Component {
 
       const unanswered = this.unansweredCount();
       const overlayToggle = this.settings.shortcuts.overlayToggle;
-      const hints = [
+      const hints = this.resize?.active ? POPUP_RESIZE_HINT : [
          keybindingHint(theme, this.keybindings, "tui.select.confirm", unanswered > 0 ? "submit with skips" : "submit"),
          literalHint(theme, this.questions.length > 1 ? `1-${this.questions.length}` : "1", "edit"),
          literalHint(theme, "tab/shift+tab", "questions"),
@@ -2264,7 +2477,7 @@ class BatchAskComponent implements Component {
             : null,
          keybindingHint(theme, this.keybindings, "tui.select.cancel", "cancel"),
       ].filter((hint): hint is string => !!hint).join(" • ");
-      const warningText = this.confirmingSkips
+      const warningText = this.confirmingSkips && !this.resize?.active
          ? theme.fg("warning", `${unanswered} unanswered — press ${formatKeyList(this.keybindings.getKeys("tui.select.confirm"))} again to submit with skips`)
          : undefined;
       const hintText = theme.fg("dim", hints);
@@ -2293,13 +2506,16 @@ class BatchAskComponent implements Component {
          if (hiddenAbove) visibleContent[0] = marker("↑", visibleContent[0]!);
          if (hiddenBelow) visibleContent[last] = marker("↓", visibleContent[last]!);
       }
-      return frameBox(theme, this.title, [...visibleContent, ...footerLines], width);
+      if (this.resize?.rows !== undefined) {
+         visibleContent.push(...Array(Math.max(0, contentBudget - visibleContent.length)).fill(""));
+      }
+      return frameBox(theme, this.title + (this.resize?.active ? " [resize]" : ""), [...visibleContent, ...footerLines], width, this.resize);
    }
 
    /** Rows the review page may use, borders included. */
    private reviewLineCap(): number {
       const rows = Number.isFinite(this.tui.terminal.rows) ? Math.floor(this.tui.terminal.rows) : 24;
-      const overlayCap = getOverlayMaxRenderLinesForRows(rows);
+      const overlayCap = this.resize?.maxRows() ?? getOverlayMaxRenderLinesForRows(rows);
       if (this.settings.displayMode === "overlay") return overlayCap;
       // Inline prompts sit in Pi's fullscreen input dock, which clips anything
       // taller than what remains after the transcript's minimum row, the
@@ -2342,6 +2558,13 @@ async function askViaDialogs(
 ): Promise<AskUIResult | null> {
    if (dialogOpts?.signal?.aborted) return null;
    const prompt = context ? `${question}\n\nContext:\n${context}` : question;
+
+   if (options.length === 0) {
+      const inputOpts = dialogStageOptions(dialogOpts, deadline);
+      if (inputOpts === null) return null;
+      const answer = await ui.input(prompt, "Type your answer...", inputOpts) as string | undefined;
+      return dialogOpts?.signal?.aborted ? null : createFreeformResponse(answer);
+   }
 
    if (allowMultiple) {
       const optionList = formatOptionsForMessage(options);
@@ -2506,7 +2729,10 @@ interface CustomPromptRequest<T> {
       theme: Theme,
       keybindings: KeybindingsManager,
       complete: (value: T | null) => void,
+      editText?: EditText,
+      resize?: PopupResize,
    ) => Component;
+   editText?: (tui: TUI, value: string, signal: AbortSignal) => Promise<string | undefined>;
    /** RPC/headless mode: ctx.ui.custom() returns undefined, so degrade to the select()/input() dialogs. */
    fallback: () => Promise<T | null>;
 }
@@ -2525,11 +2751,17 @@ async function runCustomPrompt<T>(ui: ExtensionUIContext, request: CustomPromptR
    let onCustomAbort: (() => void) | undefined;
    let customCompleted = false;
    let hasAnnouncedHide = false;
+   const editorAbort = new AbortController();
+   let pendingEdit: ReturnType<EditText> | undefined;
+   let editingExternally = false;
+   // Pi keeps this object by reference; changing it preserves the mounted prompt.
+   const customOptions = buildCustomUIOptions(displayMode, (handle) => { overlayHandle = handle; });
    try {
       const customFactory = (tui: TUI, theme: Theme, keybindings: KeybindingsManager, done: (result: T | null) => void) => {
          const complete = (value: T | null) => {
             if (customCompleted) return;
             customCompleted = true;
+            editorAbort.abort();
             done(signal?.aborted ? null : value);
          };
          if (signal) {
@@ -2543,7 +2775,15 @@ async function runCustomPrompt<T>(ui: ExtensionUIContext, request: CustomPromptR
             customTimer = setTimeout(() => complete(null), timeout);
          }
 
-         return request.createComponent(tui, theme, keybindings, complete);
+         const edit = request.editText;
+         const editText = edit ? (value: string) => {
+            editingExternally = true;
+            pendingEdit = edit(tui, value, editorAbort.signal).finally(() => { editingExternally = false; });
+            return pendingEdit;
+         } : undefined;
+         const resize = customOptions?.overlayOptions
+            ? new PopupResize(tui, customOptions.overlayOptions, keybindings, () => editingExternally) : undefined;
+         return request.createComponent(tui, theme, keybindings, complete, editText, resize);
       };
 
       // Register a raw terminal input listener for the overlay-toggle key so the
@@ -2573,12 +2813,10 @@ async function runCustomPrompt<T>(ui: ExtensionUIContext, request: CustomPromptR
          });
       }
 
-      const customResult = signal?.aborted ? null : await ui.custom<T | null>(
+      const customResult = signal?.aborted ? null : typeof ui.custom === "function" ? await ui.custom<T | null>(
          customFactory,
-         buildCustomUIOptions(displayMode, (handle) => {
-            overlayHandle = handle;
-         }),
-      );
+         customOptions,
+      ) : undefined;
 
       if (signal?.aborted) return null;
       if (customResult !== undefined) return customResult;
@@ -2590,6 +2828,8 @@ async function runCustomPrompt<T>(ui: ExtensionUIContext, request: CustomPromptR
       if (customTimer !== undefined) clearTimeout(customTimer);
       if (onCustomAbort) signal?.removeEventListener("abort", onCustomAbort);
       removeOverlayInputListener?.();
+      editorAbort.abort();
+      await pendingEdit;
    }
 }
 
@@ -2766,8 +3006,9 @@ async function executeBatch(
          signal: batch.signal,
          displayMode: settings.displayMode,
          overlayToggle: settings.shortcuts.overlayToggle,
-         createComponent: (tui, theme, keybindings, complete) =>
-            new BatchAskComponent(questions, settings, tui, theme, keybindings, complete),
+         editText: (tui, value, editSignal) => editAnswerInExternalEditor(ctx, tui, value, editSignal),
+         createComponent: (tui, theme, keybindings, complete, editText, resize) =>
+            new BatchAskComponent(questions, settings, tui, theme, keybindings, complete, editText, resize),
          fallback: () => askBatchViaDialogs(ctx.ui, questions, settings.allowComment, batch.signal, deadline),
       }));
    } finally {
@@ -2853,7 +3094,10 @@ export default function(pi: ExtensionAPI) {
    const optionSchema = Type.Object({
       title: Type.String({ description: "Short title for this option" }),
       description: Type.Optional(
-         Type.String({ description: "Longer description explaining this option" }),
+         Type.String({ description: "Short summary explaining this option. Use preview for detailed content." }),
+      ),
+      preview: Type.Optional(
+         Type.String({ description: "Detailed Markdown for the single-select details pane, separate from the short description." }),
       ),
    });
 
@@ -2874,6 +3118,7 @@ export default function(pi: ExtensionAPI) {
          "Ask one focused question per ask_user call by default.",
          "Use questions (2-4 entries) only for independent decisions whose prerequisites are already settled; ask anything that depends on another answer in a later ask_user call.",
          "Do not combine multiple numbered, multipart, or unrelated questions into one question's text.",
+         "For single-select questions, keep descriptions short and use options[].preview for detailed Markdown or code.",
       ],
       // Block other tool calls in the same assistant turn until the user answers,
       // so the model can't batch ask_user with bash/edit/write and let those run
@@ -3016,26 +3261,6 @@ export default function(pi: ExtensionAPI) {
             );
          }
 
-         if (options.length === 0) {
-            const prompt = normalizedContext ? `${question}\n\nContext:\n${normalizedContext}` : question;
-            const answer = await whileBlocked(pi, () => ctx.ui.input(prompt, "Type your answer...", dialogOpts));
-            const response = signal?.aborted ? null : createFreeformResponse(answer);
-
-            if (!response) {
-               events.cancelled(subject);
-               return {
-                  content: [{ type: "text", text: "User cancelled the question" }],
-                  details: { question, context: normalizedContext, options, response: null, cancelled: true } as AskToolDetails,
-               };
-            }
-
-            events.answered(subject, response);
-            return {
-               content: [{ type: "text", text: `User answered: ${formatResponseSummary(response)}` }],
-               details: { question, context: normalizedContext, options, response, cancelled: false } as AskToolDetails,
-            };
-         }
-
          onUpdate?.({
             content: [{ type: "text", text: "Waiting for user input..." }],
             details: { question, context: normalizedContext, options, response: null, cancelled: false },
@@ -3046,7 +3271,8 @@ export default function(pi: ExtensionAPI) {
             timeout,
             displayMode: settings.displayMode,
             overlayToggle: settings.shortcuts.overlayToggle,
-            createComponent: (tui, theme, keybindings, complete) => new AskComponent(
+            editText: (tui, value, editSignal) => editAnswerInExternalEditor(ctx, tui, value, editSignal),
+            createComponent: (tui, theme, keybindings, complete, editText, resize) => new AskComponent(
                question,
                normalizedContext,
                options,
@@ -3061,6 +3287,8 @@ export default function(pi: ExtensionAPI) {
                keybindings,
                settings.shortcuts,
                complete,
+               editText,
+               resize,
             ),
             fallback: () => askViaDialogs(
                ctx.ui,

@@ -1,6 +1,7 @@
 export interface QuestionOption {
 	title: string;
 	description?: string;
+	preview?: string;
 }
 
 export interface AnnotatedRow {
