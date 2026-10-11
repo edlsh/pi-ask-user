@@ -542,6 +542,19 @@ function getOverlayMaxRenderLinesForRows(rows: number): number {
    return Math.min(availableRows, Math.max(minimumRows, ratioRows));
 }
 
+// Rows Pi's fullscreen layout keeps outside the input dock: the transcript's
+// minimum row, the working status, and up to three footer rows.
+const INLINE_DOCK_RESERVED_ROWS = 5;
+
+/**
+ * Rows an inline prompt may use, borders included. Pi's fullscreen input dock
+ * clips anything taller, and components only learn their width, so inline
+ * prompts stay within that space instead of growing with the content.
+ */
+function getInlineMaxRenderLinesForRows(rows: number): number {
+   return Math.max(4, Math.min(getOverlayMaxRenderLinesForRows(rows), rows - INLINE_DOCK_RESERVED_ROWS));
+}
+
 function matchesSelectUp(data: string, keybindings: KeybindingsManager): boolean {
    return (
       keybindings.matches(data, "tui.select.up") ||
@@ -1484,10 +1497,6 @@ class AskComponent extends Container {
          return lines;
       }
 
-      if (this.mode === "select" && !this.allowMultiple) {
-         this.ensureSingleSelectList().setMaxVisibleRows(12);
-      }
-
       return this.renderInlineLayout(width, innerWidth);
    }
 
@@ -1497,12 +1506,26 @@ class AskComponent extends Container {
       if (this.contextExpanded) {
          return this.renderOverlayLayout(width, innerWidth);
       }
+      const promptLines = this.buildPromptLines(innerWidth, fullContextLines);
+      const helpLines = this.helpText.render(innerWidth);
+      if (this.mode === "select") {
+         const defaultRows = this.allowMultiple ? 10 : 12;
+         // Pi's fullscreen input dock clips taller prompts, so lists there get only the rows
+         // left after the prompt, the help, two spacer rows, and the borders.
+         const listRows = this.isInFullscreenDock()
+            ? Math.min(defaultRows, this.getOverlayMaxRenderLines() - promptLines.length - helpLines.length - 4)
+            : defaultRows;
+         if (listRows < this.getMinimumModeRows()) return this.renderOverlayLayout(width, innerWidth);
+         (this.allowMultiple ? this.ensureMultiSelectList() : this.ensureSingleSelectList()).setMaxVisibleRows(listRows);
+      }
+      // This layout shows the whole prompt, so there is nothing to scroll.
+      this.promptMaxScrollOffset = 0;
       const bodyLines = [
-         ...this.buildPromptLines(innerWidth, fullContextLines),
+         ...promptLines,
          "",
          ...this.modeContainer.render(innerWidth),
          "",
-         ...this.helpText.render(innerWidth),
+         ...helpLines,
       ];
       return this.frameBodyLines(bodyLines, width, innerWidth);
    }
@@ -1510,7 +1533,17 @@ class AskComponent extends Container {
    private getOverlayMaxRenderLines(): number {
       if (this.resize) return this.resize.maxRows();
       const rows = Number.isFinite(this.tui.terminal.rows) ? Math.floor(this.tui.terminal.rows) : 24;
-      return getOverlayMaxRenderLinesForRows(rows);
+      return this.isInFullscreenDock() ? getInlineMaxRenderLinesForRows(rows) : getOverlayMaxRenderLinesForRows(rows);
+   }
+
+   /** Pi's fullscreen mode mounts inline prompts in its input dock; regular mode lets them grow. */
+   private isInFullscreenDock() {
+      return this.displayMode === "inline" && "mode" in this.tui && this.tui.mode === "fullscreen";
+   }
+
+   /** Layouts that can cut the prompt short let PgUp/PgDn scroll it. */
+   private canScrollPrompt() {
+      return this.displayMode === "overlay" || this.contextExpanded || this.isInFullscreenDock();
    }
 
    private renderOverlayLayout(width: number, innerWidth: number): string[] {
@@ -1891,7 +1924,7 @@ class AskComponent extends Container {
       const overlayHint = this.displayMode === "overlay" && !this.shortcuts.overlayToggle.disabled
          ? literalHint(theme, this.shortcuts.overlayToggle.spec, "hide")
          : null;
-      const promptScrollHint = this.displayMode === "overlay" || this.contextExpanded
+      const promptScrollHint = this.canScrollPrompt()
          ? literalHint(theme, "PgUp/PgDn", "prompt")
          : null;
       const commentHint = this.allowComment && !this.shortcuts.commentToggle.disabled
@@ -2164,7 +2197,7 @@ class AskComponent extends Container {
    }
 
    private setPromptScrollOffset(nextOffset: number): boolean {
-      if (this.displayMode !== "overlay" && !this.contextExpanded) return false;
+      if (!this.canScrollPrompt()) return false;
       if (this.promptMaxScrollOffset <= 0) return false;
       const clamped = Math.max(0, Math.min(Math.floor(nextOffset), this.promptMaxScrollOffset));
       const changed = clamped !== this.promptScrollOffset;
@@ -2173,7 +2206,7 @@ class AskComponent extends Container {
    }
 
    private handlePromptScrollInput(data: string): boolean {
-      if (this.displayMode !== "overlay" && !this.contextExpanded) return false;
+      if (!this.canScrollPrompt()) return false;
       if (this.promptMaxScrollOffset <= 0) return false;
       // Prompt scrolling is select-mode only: in freeform/comment modes the
       // editor owns PageUp/PageDown (tui.editor.pageUp/pageDown) for paging
@@ -2257,9 +2290,6 @@ class AskComponent extends Container {
    }
 }
 
-// Rows Pi's fullscreen layout keeps outside the input dock: the transcript's
-// minimum row, the working status, and up to three footer rows.
-const INLINE_DOCK_RESERVED_ROWS = 5;
 // Answer rows the review page keeps before squeezing its footer.
 const REVIEW_MIN_CONTENT_ROWS = 3;
 
@@ -2515,13 +2545,8 @@ class BatchAskComponent implements Component {
    /** Rows the review page may use, borders included. */
    private reviewLineCap(): number {
       const rows = Number.isFinite(this.tui.terminal.rows) ? Math.floor(this.tui.terminal.rows) : 24;
-      const overlayCap = this.resize?.maxRows() ?? getOverlayMaxRenderLinesForRows(rows);
-      if (this.settings.displayMode === "overlay") return overlayCap;
-      // Inline prompts sit in Pi's fullscreen input dock, which clips anything
-      // taller than what remains after the transcript's minimum row, the
-      // working status, and the 2-3 row footer. Components only learn their
-      // width, so stay within that space instead of growing with the content.
-      return Math.max(4, Math.min(overlayCap, rows - INLINE_DOCK_RESERVED_ROWS));
+      if (this.settings.displayMode === "inline") return getInlineMaxRenderLinesForRows(rows);
+      return this.resize?.maxRows() ?? getOverlayMaxRenderLinesForRows(rows);
    }
 }
 

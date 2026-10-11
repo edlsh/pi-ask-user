@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { findPackageJSON } from "node:module";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -252,6 +253,62 @@ for (const displayMode of ["overlay", "inline"]) {
          },
       });
    }
+}
+
+// Pi's fullscreen mode clips inline prompts to its input dock, which keeps 7 of 12
+// rows. Paging must reach every detail line and the prompt in the painted frame.
+// Pi 0.74 has no dock.
+const chatViewport = new URL("./modes/interactive/chat-viewport.js", hostEntry);
+if (existsSync(chatViewport)) {
+   const { createChatViewport } = await import(chatViewport);
+   const { renderLayoutFrame } = await import(new URL("./dist/layout.js", tuiPackage));
+   const { Container, Text } = await import(new URL("./dist/index.js", tuiPackage));
+   await tool.execute("smoke-fullscreen-dock", {
+      question: "Choose one",
+      context: "CONTEXT_LINE",
+      options: [
+         { title: "First", description: detailLines.join("\n\n") },
+         { title: "Second", description: "A short description." },
+      ],
+      allowFreeform: false,
+      allowComment: false,
+      singleSelectLayout: "auto",
+      displayMode: "inline",
+   }, undefined, undefined, {
+      hasUI: true,
+      ui: {
+         custom: async (factory) => {
+            let response;
+            const prompt = factory(
+               { requestRender() {}, terminal: { rows: 12 }, mode: "fullscreen" },
+               theme, getKeybindings(), (value) => { response = value; },
+            );
+            const { root } = createChatViewport({
+               document: new Text("Transcript", 0, 0),
+               pendingMessages: new Container(),
+               status: new Text("Working", 0, 0),
+               editor: prompt,
+               footer: new Text("Footer 1\nFooter 2\nFooter 3", 0, 0),
+            });
+            const frame = () => renderLayoutFrame(root, 120, 12).lines.map((line) => stripVTControlCharacters(line).trimEnd());
+            const seen = new Set();
+            for (let step = 0; step < 120; step++) {
+               const rows = frame();
+               assert.match(rows.at(-4), /^╰.*╯$/, "The whole prompt must fit the dock");
+               assert.deepEqual(rows.slice(-3), ["Footer 1", "Footer 2", "Footer 3"]);
+               for (const row of rows) for (const match of row.matchAll(/DETAIL_\d+/g)) seen.add(match[0]);
+               prompt.handleInput("\x1b[C");
+            }
+            assert.equal(seen.size, detailLines.length, "Right arrow must reach every detail line on screen");
+            assert.ok(!frame().join("\n").includes("CONTEXT_LINE"));
+            prompt.handleInput("\x1b[F");
+            assert.ok(frame().join("\n").includes("CONTEXT_LINE"), "End must scroll the cut-off prompt");
+            prompt.handleInput("\r");
+            assert.deepEqual(response, { kind: "selection", selections: ["First"] });
+            return response;
+         },
+      },
+   });
 }
 
 // Short reviews: every answer must be reachable by scrolling, within the height
