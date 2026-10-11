@@ -251,7 +251,9 @@ In multi-select mode, checked options stay selected when you open `Type somethin
 
 Comment drafts survive returning to the option list and choosing another option.
 
-The external-editor shortcut uses Pi's `externalEditor` setting, then `VISUAL` or `EDITOR`, with the same fallback as Pi. An editor failure leaves the draft unchanged. Cancelling or timing out the prompt stops the editor process and restores the terminal.
+Questions without options open in the answer editor. Press Esc to read the whole question and context, then Enter to return to your draft. A second Esc cancels the question.
+
+The external-editor shortcut uses Pi's `externalEditor` setting, then `VISUAL` or `EDITOR`, with the same fallback as Pi. An editor failure leaves the draft unchanged. Cancelling or timing out the prompt stops the editor process and restores the terminal. On Windows, the prompt waits for you to close the editor first, as Pi's own external editor does.
 
 ### Cancellation
 

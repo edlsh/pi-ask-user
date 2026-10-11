@@ -149,8 +149,11 @@ async function editAnswerInExternalEditor(ctx: ExtensionContext, tui: TUI, value
       tui.stop();
       stopped = true;
       await new Promise<void>((resolve, reject) => {
+         // Windows runs the editor through a shell, and aborting would kill only the shell while the
+         // editor keeps the console. There, wait for the editor to exit, as Pi's own Ctrl+G does.
+         const windows = process.platform === "win32";
          const child = spawn(editor, [...args, file], {
-            stdio: "inherit", shell: process.platform === "win32", signal,
+            stdio: "inherit", shell: windows, ...(windows ? {} : { signal }),
          });
          let failure: Error | undefined;
          child.once("error", (error) => { failure = error; });
@@ -1152,7 +1155,7 @@ class WrappedSingleSelectList implements Component {
       } else if (this.isFreeformRow(this.selectedIndex, filteredOptions)) {
          md += "## Custom response\n\n";
          md += "Open the editor to write **any** answer.\n\n";
-         md += "*Use this when none of the listed options fit.*\n";
+         if (this.options.length > 0) md += "*Use this when none of the listed options fit.*\n";
          if (this.searchQuery) {
             md += `\n> Current filter: \`${this.searchQuery}\`\n`;
          }
@@ -1304,12 +1307,16 @@ class WrappedSingleSelectList implements Component {
       let lines: string[];
 
       if (!splitPane) {
-         if (filteredOptions[this.selectedIndex]?.preview?.trim() && this.maxVisibleRows >= 3) {
+         const hasPreview = !!filteredOptions[this.selectedIndex]?.preview?.trim();
+         if (hasPreview && this.maxVisibleRows >= 3) {
             const gap = this.maxVisibleRows >= 4 ? 1 : 0;
             const listRows = Math.max(2, Math.ceil((this.maxVisibleRows - gap) / 2));
             const listLines = this.buildListLines(width, filteredOptions, false, listRows);
             const previewRows = this.maxVisibleRows - listLines.length - gap;
             lines = [...listLines, ...(gap ? [""] : []), ...this.buildPreviewLines(width, filteredOptions, previewRows)];
+         } else if (hasPreview) {
+            // Too short for the list and the preview together; the preview's heading names the option.
+            lines = this.buildPreviewLines(width, filteredOptions, this.maxVisibleRows);
          } else {
             this.previewScrollOffset = 0;
             this.previewMaxScrollOffset = 0;
@@ -1418,8 +1425,9 @@ class AskComponent extends Container {
       this.context = context;
       this.options = options;
       this.allowMultiple = allowMultiple;
-      this.allowFreeform = allowFreeform;
-      this.allowComment = allowComment;
+      // Without options, the question page offers only the answer editor.
+      this.allowFreeform = allowFreeform || options.length === 0;
+      this.allowComment = allowComment && options.length > 0;
       this.displayMode = displayMode;
       this.singleSelectLayout = singleSelectLayout;
       this.preferExpandedContext = contextExpanded;
@@ -1518,8 +1526,6 @@ class AskComponent extends Container {
          if (listRows < this.getMinimumModeRows()) return this.renderOverlayLayout(width, innerWidth);
          (this.allowMultiple ? this.ensureMultiSelectList() : this.ensureSingleSelectList()).setMaxVisibleRows(listRows);
       }
-      // This layout shows the whole prompt, so there is nothing to scroll.
-      this.promptMaxScrollOffset = 0;
       const bodyLines = [
          ...promptLines,
          "",
@@ -1527,6 +1533,12 @@ class AskComponent extends Container {
          "",
          ...helpLines,
       ];
+      // The answer and comment editors can still outgrow the dock; the bounded layout fits them.
+      if (this.isInFullscreenDock() && bodyLines.length + 2 > this.getOverlayMaxRenderLines()) {
+         return this.renderOverlayLayout(width, innerWidth);
+      }
+      // This layout shows the whole prompt, so there is nothing to scroll.
+      this.promptMaxScrollOffset = 0;
       return this.frameBodyLines(bodyLines, width, innerWidth);
    }
 
@@ -1946,7 +1958,7 @@ class AskComponent extends Container {
             keybindingHint(theme, this.keybindings, "tui.input.submit", this.mode === "comment" ? "submit/skip" : "submit"),
             keybindingHint(theme, this.keybindings, "tui.input.newLine", "newline"),
             this.editText ? keybindingHint(theme, this.keybindings, "app.editor.external", "external editor") : null,
-            literalHint(theme, "esc", this.options.length === 0 ? "cancel" : "back"),
+            literalHint(theme, "esc", "back"),
             overlayHint,
             alternateCancelKeys.length > 0 ? literalHint(theme, formatKeyList(alternateCancelKeys), "cancel") : null,
          ]
@@ -2256,11 +2268,7 @@ class AskComponent extends Container {
       }
       if (this.mode === "freeform" || this.mode === "comment") {
          if (matchesKey(data, Key.escape)) {
-            // Without options there is no list to go back to, so esc cancels.
-            if (this.options.length === 0) {
-               this.onDone(null);
-               return;
-            }
+            // Questions without options go back to a page that shows the whole question and context.
             this.showSelectMode();
             return;
          }

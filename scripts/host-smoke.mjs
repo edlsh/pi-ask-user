@@ -256,24 +256,15 @@ for (const displayMode of ["overlay", "inline"]) {
 }
 
 // Pi's fullscreen mode clips inline prompts to its input dock, which keeps 7 of 12
-// rows. Paging must reach every detail line and the prompt in the painted frame.
-// Pi 0.74 has no dock.
+// rows. Every frame must fit the dock, and paging must reach all of the prompt in
+// the painted frame. Pi 0.74 has no dock.
 const chatViewport = new URL("./modes/interactive/chat-viewport.js", hostEntry);
 if (existsSync(chatViewport)) {
    const { createChatViewport } = await import(chatViewport);
    const { renderLayoutFrame } = await import(new URL("./dist/layout.js", tuiPackage));
    const { Container, Text } = await import(new URL("./dist/index.js", tuiPackage));
-   await tool.execute("smoke-fullscreen-dock", {
-      question: "Choose one",
-      context: "CONTEXT_LINE",
-      options: [
-         { title: "First", description: detailLines.join("\n\n") },
-         { title: "Second", description: "A short description." },
-      ],
-      allowFreeform: false,
-      allowComment: false,
-      singleSelectLayout: "auto",
-      displayMode: "inline",
+   const inDock = (params, width, act) => tool.execute("smoke-fullscreen-dock", {
+      allowComment: false, singleSelectLayout: "auto", displayMode: "inline", ...params,
    }, undefined, undefined, {
       hasUI: true,
       ui: {
@@ -283,6 +274,7 @@ if (existsSync(chatViewport)) {
                { requestRender() {}, terminal: { rows: 12 }, mode: "fullscreen" },
                theme, getKeybindings(), (value) => { response = value; },
             );
+            prompt.focused = true;
             const { root } = createChatViewport({
                document: new Text("Transcript", 0, 0),
                pendingMessages: new Container(),
@@ -290,25 +282,65 @@ if (existsSync(chatViewport)) {
                editor: prompt,
                footer: new Text("Footer 1\nFooter 2\nFooter 3", 0, 0),
             });
-            const frame = () => renderLayoutFrame(root, 120, 12).lines.map((line) => stripVTControlCharacters(line).trimEnd());
-            const seen = new Set();
-            for (let step = 0; step < 120; step++) {
-               const rows = frame();
+            const frame = () => {
+               const rows = renderLayoutFrame(root, width, 12).lines.map((line) => stripVTControlCharacters(line).trimEnd());
                assert.match(rows.at(-4), /^╰.*╯$/, "The whole prompt must fit the dock");
                assert.deepEqual(rows.slice(-3), ["Footer 1", "Footer 2", "Footer 3"]);
-               for (const row of rows) for (const match of row.matchAll(/DETAIL_\d+/g)) seen.add(match[0]);
-               prompt.handleInput("\x1b[C");
-            }
-            assert.equal(seen.size, detailLines.length, "Right arrow must reach every detail line on screen");
-            assert.ok(!frame().join("\n").includes("CONTEXT_LINE"));
-            prompt.handleInput("\x1b[F");
-            assert.ok(frame().join("\n").includes("CONTEXT_LINE"), "End must scroll the cut-off prompt");
-            prompt.handleInput("\r");
-            assert.deepEqual(response, { kind: "selection", selections: ["First"] });
+               return rows.join("\n");
+            };
+            act(prompt, frame);
             return response;
          },
       },
    });
+   const pageRight = (prompt, frame, pattern) => {
+      const seen = new Set();
+      for (let step = 0; step < 120; step++) {
+         for (const match of frame().matchAll(pattern)) seen.add(match[0]);
+         prompt.handleInput("\x1b[C");
+      }
+      return seen.size;
+   };
+
+   const paged = await inDock({
+      question: "Choose one",
+      context: "CONTEXT_LINE",
+      options: [
+         { title: "First", description: detailLines.join("\n\n") },
+         { title: "Second", description: "A short description." },
+      ],
+      allowFreeform: false,
+   }, 120, (prompt, frame) => {
+      assert.equal(pageRight(prompt, frame, /DETAIL_\d+/g), detailLines.length, "Right arrow must reach every detail line on screen");
+      assert.ok(!frame().includes("CONTEXT_LINE"));
+      prompt.handleInput("\x1b[F");
+      assert.ok(frame().includes("CONTEXT_LINE"), "End must scroll the cut-off prompt");
+      prompt.handleInput("\r");
+   });
+   assert.deepEqual(paged.details.response, { kind: "selection", selections: ["First"] });
+
+   // At 70 columns the list and the preview stack, and the list has only two rows.
+   const previewed = await inDock({
+      question: "Choose one",
+      options: [{ title: "First", description: "Brief summary", preview: "PREVIEW_0\n\nPREVIEW_1\n\nPREVIEW_2" }],
+      allowFreeform: false,
+   }, 70, (prompt, frame) => {
+      assert.equal(pageRight(prompt, frame, /PREVIEW_\d/g), 3, "Right arrow must reach every preview line on screen");
+      prompt.handleInput("\r");
+   });
+   assert.deepEqual(previewed.details.response, { kind: "selection", selections: ["First"] });
+
+   // A question without options opens in the editor, where a long draft must not push the prompt out of the dock.
+   const draft = Array.from({ length: 10 }, (_, n) => `ANSWER_${n}`).join("\n");
+   const written = await inDock({ question: "QUESTION_MARKER" }, 120, (prompt, frame) => {
+      prompt.handleInput(`\x1b[200~${draft}\x1b[201~`);
+      assert.match(frame(), /enter submit/);
+      prompt.handleInput("\x1b");
+      assert.match(frame(), /QUESTION_MARKER/, "Esc must show the question");
+      prompt.handleInput("\r");
+      prompt.handleInput("\r");
+   });
+   assert.deepEqual(written.details.response, { kind: "freeform", text: draft });
 }
 
 // Short reviews: every answer must be reachable by scrolling, within the height

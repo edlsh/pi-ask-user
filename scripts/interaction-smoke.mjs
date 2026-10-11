@@ -558,4 +558,43 @@ test("ask_user interactions", { timeout: 30000 }, async (t) => {
     prompt.press("\r");
     assert.deepEqual((await prompt.result).details.response, { kind: "freeform", text: "Xoriginal" });
   });
+
+  await t.test("previews stay reachable when the list has fewer than three rows", async (t) => {
+    const preview = Array.from({ length: 30 }, (_, i) => `PREVIEW_${String(i).padStart(2, "0")}`).join("\n");
+    const prompt = open({ options: [{ title: "First", description: "Brief summary", preview }] }, 8);
+    t.after(() => prompt.close());
+    const seen = new Set();
+    for (let i = 0; i < 100; i++) {
+      for (const line of prompt.render(70).match(/PREVIEW_\d+/g) ?? []) seen.add(line);
+      prompt.press("\x1b[C", 70);
+    }
+    assert.equal(seen.size, 30);
+  });
+
+  await t.test("Esc in a question without options shows the whole question and keeps the draft", async (t) => {
+    const question = Array.from({ length: 5 }, (_, i) => `QUESTION_LINE_${i}`).join("\n");
+    const longContext = Array.from({ length: 10 }, (_, i) => `CONTEXT_LINE_${i}`).join("\n");
+    for (const [params, rows, keys, pattern, total] of [
+      [{ question, context: undefined }, 12, ["\x1b[6~", "\x1b[F"], /QUESTION_LINE_\d/g, 5],
+      [{ question: "Why?", context: longContext, displayMode: "inline" }, 40, ["\x05"], /CONTEXT_LINE_\d/g, 10],
+    ]) {
+      const prompt = open({ options: [], ...params }, rows);
+      t.after(() => prompt.close());
+      prompt.press(paste("My draft"));
+      assert.match(prompt.render(), /esc back/);
+      const seen = new Set();
+      for (const key of ["\x1b", ...keys]) {
+        for (const match of prompt.press(key).matchAll(pattern)) seen.add(match[0]);
+      }
+      assert.equal(seen.size, total);
+      assert.match(prompt.press("\r"), /My draft/);
+      prompt.press("\r");
+      assert.deepEqual((await prompt.result).details.response, { kind: "freeform", text: "My draft" });
+    }
+    const prompt = open({ options: [], allowComment: true });
+    t.after(() => prompt.close());
+    assert.doesNotMatch(prompt.press("\x1b"), /Add extra context/);
+    prompt.press("\x1b");
+    assert.equal((await prompt.result).details.cancelled, true);
+  });
 });
