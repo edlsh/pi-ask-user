@@ -499,6 +499,7 @@ function matchesSelectUp(data: string, keybindings: KeybindingsManager, filterin
    if (filtering && (matchesKey(data, "j") || matchesKey(data, "k"))) return false;
    return (
       keybindings.matches(data, "tui.select.up") ||
+      (filtering && matchesKey(data, Key.up)) ||
       matchesKey(data, Key.shift("tab")) ||
       matchesKey(data, VIM_SELECT_UP_KEY) ||
       matchesKey(data, "k")
@@ -509,6 +510,7 @@ function matchesSelectDown(data: string, keybindings: KeybindingsManager, filter
    if (filtering && (matchesKey(data, "j") || matchesKey(data, "k"))) return false;
    return (
       keybindings.matches(data, "tui.select.down") ||
+      (filtering && matchesKey(data, Key.down)) ||
       matchesKey(data, Key.tab) ||
       matchesKey(data, VIM_SELECT_DOWN_KEY) ||
       matchesKey(data, "j")

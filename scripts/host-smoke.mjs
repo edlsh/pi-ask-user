@@ -118,7 +118,7 @@ assert.equal(answered.length, 1, "Failed calls must not emit an answer");
 // Use the host's actual theme, TUI components, key parser, and cell-width calculation.
 // Only the terminal scheduling surface is inert; no real terminal is opened.
 const tuiPackage = pathToFileURL(findPackageJSON("@earendil-works/pi-tui", hostEntry));
-const { getKeybindings, visibleWidth } = await import(new URL("./dist/index.js", tuiPackage));
+const { getKeybindings, KeybindingsManager, TUI_KEYBINDINGS, visibleWidth } = await import(new URL("./dist/index.js", tuiPackage));
 const { initTheme, theme } = await import(new URL("./modes/interactive/theme/theme.js", hostEntry));
 initTheme("dark");
 const errorLines = tool.renderResult(
@@ -252,9 +252,12 @@ for (const displayMode of ["inline", "overlay"]) {
       { status: "answered", response: { kind: "selection", selections: ["Gamma"] } },
    ]);
 }
-// Modal filtering uses the real key parser, including Kitty press/release events.
+// Modal filtering uses the real key parser, including Kitty events and remapped navigation.
 for (const displayMode of ["inline", "overlay"]) {
-   for (const kitty of [false, true]) {
+   for (const { kitty, remapped } of [
+      { kitty: false, remapped: false }, { kitty: true, remapped: false },
+      { kitty: false, remapped: true }, { kitty: true, remapped: true },
+   ]) {
       const result = await tool.execute("smoke-modal-filter", {
          question: "Choose one",
          options: [{ title: "Jki 1" }, { title: "Jki 2" }, { title: "Other" }],
@@ -268,9 +271,12 @@ for (const displayMode of ["inline", "overlay"]) {
          ui: {
             custom: async (factory) => {
                let response;
+               const keybindings = remapped ? new KeybindingsManager(TUI_KEYBINDINGS, {
+                  "tui.select.up": ["k"], "tui.select.down": ["j"],
+               }) : getKeybindings();
                const component = factory(
                   { requestRender() {}, terminal: { rows: 40 } },
-                  theme, getKeybindings(), (value) => { response = value; },
+                  theme, keybindings, (value) => { response = value; },
                );
                const press = (key) => {
                   component.handleInput(key);
@@ -278,10 +284,17 @@ for (const displayMode of ["inline", "overlay"]) {
                };
                const key = (text) => kitty ? `\x1b[${text.codePointAt(0)}u` : text;
                assert.match(press(key("j")), /→.*Jki 2/);
-               assert.match(press(key("k")), /→.*Jki 1/);
+               const navigation = press(key("k"));
+               assert.match(navigation, /→.*Jki 1/);
+               if (remapped) {
+                  assert.equal(press("\x1b[B"), navigation);
+                  assert.equal(press("\x1b[A"), navigation);
+               }
                assert.match(press(key("i")), /Filter \(typing\): type to filter/);
                assert.match(press("\x1b[105;1:3u"), /Filter \(typing\): type to filter/);
                for (const character of "jki") press(key(character));
+               assert.match(press("\x1b[B"), /→.*Jki 2/);
+               assert.match(press("\x1b[A"), /→.*Jki 1/);
                press("\x0b"); // Focus the comment row; a typed space must still edit the filter.
                assert.doesNotMatch(press(key(" ")), /\[✓\]/);
                assert.match(press(key("1")), /Filter \(typing\): jki 1/);
