@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { findPackageJSON } from "node:module";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { stripVTControlCharacters } from "node:util";
 import { createEventBus } from "@earendil-works/pi-coding-agent";
 
 const hostEntry = import.meta.resolve("@earendil-works/pi-coding-agent");
@@ -251,4 +252,80 @@ for (const displayMode of ["inline", "overlay"]) {
       { status: "answered", response: { kind: "selection", selections: ["Gamma"] } },
    ]);
 }
-console.log("Host smoke passed: registration, schema, batch schema validation, RPC select, redacted event, thrown errors, error rendering, native TUI, batch TUI.");
+// Modal filtering uses the real key parser, including Kitty press/release events.
+for (const displayMode of ["inline", "overlay"]) {
+   for (const kitty of [false, true]) {
+      const result = await tool.execute("smoke-modal-filter", {
+         question: "Choose one",
+         options: [{ title: "Jki 1" }, { title: "Jki 2" }, { title: "Other" }],
+         allowFreeform: false,
+         allowComment: true,
+         commentToggleKey: "ctrl+g",
+         displayMode,
+         singleSelectLayout: "list",
+      }, undefined, undefined, {
+         hasUI: true,
+         ui: {
+            custom: async (factory) => {
+               let response;
+               const component = factory(
+                  { requestRender() {}, terminal: { rows: 40 } },
+                  theme, getKeybindings(), (value) => { response = value; },
+               );
+               const press = (key) => {
+                  component.handleInput(key);
+                  return stripVTControlCharacters(component.render(80).join("\n"));
+               };
+               const key = (text) => kitty ? `\x1b[${text.codePointAt(0)}u` : text;
+               assert.match(press(key("j")), /→.*Jki 2/);
+               assert.match(press(key("k")), /→.*Jki 1/);
+               assert.match(press(key("i")), /Filter \(typing\): type to filter/);
+               assert.match(press("\x1b[105;1:3u"), /Filter \(typing\): type to filter/);
+               for (const character of "jki") press(key(character));
+               press("\x0b"); // Focus the comment row; a typed space must still edit the filter.
+               assert.doesNotMatch(press(key(" ")), /\[✓\]/);
+               assert.match(press(key("1")), /Filter \(typing\): jki 1/);
+               assert.match(press("🦊"), /No matching options/);
+               assert.match(press("\x7f"), /→.*Jki 1/);
+               press("\x7f");
+               assert.doesNotMatch(press("\x1b"), /Filter \(typing\)/);
+               assert.match(press(key("j")), /→.*Jki 2/);
+               assert.match(press(key("i")), /Filter \(typing\): jki /);
+               press(key("2"));
+               for (const width of [40, 120]) {
+                  for (const line of component.render(width)) assert.ok(visibleWidth(line) <= width);
+               }
+               press("\r");
+               return response;
+            },
+         },
+      });
+      assert.deepEqual(result.details.response, { kind: "selection", selections: ["Jki 2"] });
+   }
+}
+for (const comment of [false, true]) {
+   const result = await tool.execute("smoke-editor-keys", {
+      question: "Choose one", options: [{ title: "Alpha" }], allowFreeform: true,
+      allowComment: comment, commentToggleKey: "ctrl+g", displayMode: "inline",
+   }, undefined, undefined, {
+      hasUI: true,
+      ui: {
+         custom: async (factory) => {
+            let response;
+            const component = factory(
+               { requestRender() {}, terminal: { rows: 40 } },
+               theme, getKeybindings(), (value) => { response = value; },
+            );
+            component.handleInput(comment ? "\x07" : "\x1b[A");
+            component.handleInput("\r");
+            for (const key of "ijk") component.handleInput(key);
+            component.handleInput("\r");
+            return response;
+         },
+      },
+   });
+   assert.deepEqual(result.details.response, comment
+      ? { kind: "selection", selections: ["Alpha"], comment: "ijk" }
+      : { kind: "freeform", text: "ijk" });
+}
+console.log("Host smoke passed: registration, schema, batch schema validation, RPC select, redacted event, thrown errors, error rendering, native TUI, batch TUI, modal filtering, editor keys.");
