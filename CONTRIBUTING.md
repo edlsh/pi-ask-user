@@ -48,7 +48,10 @@ Remove private question/answer content before sharing logs.
 
 ## Releases
 
-Publishing runs the same checks before calling npm. A tag-triggered release must
+Publishing runs the same checks before calling npm. `publish.yml` authenticates
+through npm trusted publishing (OIDC); there is no npm token secret, and the
+trusted publisher on npmjs.com must keep naming `edlsh/pi-ask-user` and
+`publish.yml`. A tag-triggered release must
 match `package.json`. Keep the changelog current and verify the published package
 version, contents, installation, and provenance after a successful run. An
 already-published version being skipped is not proof that publishing works.

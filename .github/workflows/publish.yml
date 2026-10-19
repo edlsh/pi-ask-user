@@ -21,7 +21,8 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: 22
+          # Trusted publishing (OIDC) needs npm >= 11.5.1, which Node 24 bundles.
+          node-version: 24
           registry-url: https://registry.npmjs.org
 
       - name: Setup Bun
@@ -60,8 +61,8 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # Authenticates through npm trusted publishing (OIDC, id-token: write);
+      # no npm token secret is used.
       - name: Publish package with provenance
         if: steps.npm_version.outputs.exists != 'true'
         run: npm publish --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
