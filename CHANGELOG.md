@@ -1,10 +1,19 @@
 # Changelog
 
-## Unreleased
+## [0.17.0](https://github.com/edlsh/pi-ask-user/releases/tag/v0.17.0) - 2026-10-19
+
+### Changed
+
+- `ask_user` declares `exposure: "model-only"`, so codemode and other scripts cannot open user prompts. Hosts older than Pi 1.0.2 ignore the field at runtime. ([#78](https://github.com/edlsh/pi-ask-user/pull/78))
 
 ### Added
 
+- Optional `ask-user.json` settings file in the agent directory (`~/.pi/agent`, or `PI_CODING_AGENT_DIR` when set) for personal defaults: `displayMode`, `singleSelectLayout`, `allowComment`, `contextExpanded`, `overlayToggleKey`, `commentToggleKey`, and `emitFullEvents`. Precedence is per-call parameter, then environment variable, then the file, then the built-in default. The file is re-read on every call; unknown keys and invalid values are ignored, and malformed JSON fails the call with the file path. ([#71](https://github.com/edlsh/pi-ask-user/pull/71))
 - Native presentation in [Tern](https://stencil.so) through [pi-tern](https://github.com/edlsh/pi-tern)'s optional hooks: the prompt is a native sheet in omp's ask style (question tabs, markdown question and context, clickable options, a native editor bound to the custom-response and comment editor, the review page, an action bar), and the tool card shows every option with the chosen ones checked. Pointer events run the same transitions as the keys. Without pi-tern nothing changes; the hooks are global symbols and nothing imports pi-tern.
+
+### Fixed
+
+- A call that sends both `question` and `questions` now treats the top-level `question` as the batch heading instead of failing. The heading appears in the frame title, review page, native Tern sheets, fallback dialogs, and result text, and is returned as `details.heading`. ([#83](https://github.com/edlsh/pi-ask-user/pull/83))
 
 ## [0.16.0](https://github.com/edlsh/pi-ask-user/releases/tag/v0.16.0) - 2026-10-02
 
