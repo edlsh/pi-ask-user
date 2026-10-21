@@ -105,8 +105,9 @@ export interface QuestionTabs {
 export interface ChoiceList {
    readonly rows: ChoiceRow[];
    readonly selected: number;
-   /** The type-to-filter text (single-select lists filter as you type). */
+   /** The single-select filter text, retained when leaving filter typing mode. */
    readonly query?: string;
+   readonly filtering?: boolean;
 }
 
 export interface ChoiceSheet extends ChoiceList {
@@ -165,7 +166,11 @@ export function choiceSheet(sheet: ChoiceSheet): TernNode {
    });
    return askSheet(sheet.tabs, [
       ...questionNodes(sheet.question, sheet.context),
-      sheet.query ? n("text", { spans: [{ t: "Filter ", s: "muted" }, { t: sheet.query, s: "accent" }] }, [], "filter") : null,
+      !sheet.multiple ? n("text", { spans: [
+         { t: sheet.filtering ? "Filter (typing): " : "Filter: ", s: "muted" },
+         { t: sheet.query || (sheet.filtering ? "type to filter" : "press i to filter"), s: "accent" },
+         { t: sheet.filtering ? " · esc navigate" : " · j/k navigate", s: "muted" },
+      ] }, [], "filter") : null,
       n("list", { selected: sheet.rows[sheet.selected]?.id ?? null, role: "omp.ask.options", empty: "No matching options" }, items, CHOICE_LIST_KEY),
       actionBar([button("Cancel", "cancel", "esc"), button(sheet.multiple ? "Submit" : "Select", "submit", "enter", "accent")]),
    ]);

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { findPackageJSON } from "node:module";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { stripVTControlCharacters } from "node:util";
 import { createEventBus } from "@earendil-works/pi-coding-agent";
 
 const hostEntry = import.meta.resolve("@earendil-works/pi-coding-agent");
@@ -117,7 +118,7 @@ assert.equal(answered.length, 1, "Failed calls must not emit an answer");
 // Use the host's actual theme, TUI components, key parser, and cell-width calculation.
 // Only the terminal scheduling surface is inert; no real terminal is opened.
 const tuiPackage = pathToFileURL(findPackageJSON("@earendil-works/pi-tui", hostEntry));
-const { getKeybindings, visibleWidth } = await import(new URL("./dist/index.js", tuiPackage));
+const { getKeybindings, KeybindingsManager, TUI_KEYBINDINGS, visibleWidth } = await import(new URL("./dist/index.js", tuiPackage));
 const { initTheme, theme } = await import(new URL("./modes/interactive/theme/theme.js", hostEntry));
 initTheme("dark");
 const errorLines = tool.renderResult(
@@ -251,4 +252,93 @@ for (const displayMode of ["inline", "overlay"]) {
       { status: "answered", response: { kind: "selection", selections: ["Gamma"] } },
    ]);
 }
-console.log("Host smoke passed: registration, schema, batch schema validation, RPC select, redacted event, thrown errors, error rendering, native TUI, batch TUI.");
+// Modal filtering uses the real key parser, including Kitty events and remapped navigation.
+for (const displayMode of ["inline", "overlay"]) {
+   for (const { kitty, remapped } of [
+      { kitty: false, remapped: false }, { kitty: true, remapped: false },
+      { kitty: false, remapped: true }, { kitty: true, remapped: true },
+   ]) {
+      const result = await tool.execute("smoke-modal-filter", {
+         question: "Choose one",
+         options: [{ title: "Jki 1" }, { title: "Jki 2" }, { title: "Other" }],
+         allowFreeform: false,
+         allowComment: true,
+         commentToggleKey: "ctrl+g",
+         displayMode,
+         singleSelectLayout: "list",
+      }, undefined, undefined, {
+         hasUI: true,
+         ui: {
+            custom: async (factory) => {
+               let response;
+               const keybindings = remapped ? new KeybindingsManager(TUI_KEYBINDINGS, {
+                  "tui.select.up": ["k"], "tui.select.down": ["j"],
+               }) : getKeybindings();
+               const component = factory(
+                  { requestRender() {}, terminal: { rows: 40 } },
+                  theme, keybindings, (value) => { response = value; },
+               );
+               const press = (key) => {
+                  component.handleInput(key);
+                  return stripVTControlCharacters(component.render(80).join("\n"));
+               };
+               const key = (text) => kitty ? `\x1b[${text.codePointAt(0)}u` : text;
+               assert.match(press(key("j")), /→.*Jki 2/);
+               const navigation = press(key("k"));
+               assert.match(navigation, /→.*Jki 1/);
+               if (remapped) {
+                  assert.equal(press("\x1b[B"), navigation);
+                  assert.equal(press("\x1b[A"), navigation);
+               }
+               assert.match(press(key("i")), /Filter \(typing\): type to filter/);
+               assert.match(press("\x1b[105;1:3u"), /Filter \(typing\): type to filter/);
+               for (const character of "jki") press(key(character));
+               assert.match(press("\x1b[B"), /→.*Jki 2/);
+               assert.match(press("\x1b[A"), /→.*Jki 1/);
+               press("\x0b"); // Focus the comment row; a typed space must still edit the filter.
+               assert.doesNotMatch(press(key(" ")), /\[✓\]/);
+               assert.match(press(key("1")), /Filter \(typing\): jki 1/);
+               assert.match(press("🦊"), /No matching options/);
+               assert.match(press("\x7f"), /→.*Jki 1/);
+               press("\x7f");
+               assert.doesNotMatch(press("\x1b"), /Filter \(typing\)/);
+               assert.match(press(key("j")), /→.*Jki 2/);
+               assert.match(press(key("i")), /Filter \(typing\): jki /);
+               press(key("2"));
+               for (const width of [40, 120]) {
+                  for (const line of component.render(width)) assert.ok(visibleWidth(line) <= width);
+               }
+               press("\r");
+               return response;
+            },
+         },
+      });
+      assert.deepEqual(result.details.response, { kind: "selection", selections: ["Jki 2"] });
+   }
+}
+for (const comment of [false, true]) {
+   const result = await tool.execute("smoke-editor-keys", {
+      question: "Choose one", options: [{ title: "Alpha" }], allowFreeform: true,
+      allowComment: comment, commentToggleKey: "ctrl+g", displayMode: "inline",
+   }, undefined, undefined, {
+      hasUI: true,
+      ui: {
+         custom: async (factory) => {
+            let response;
+            const component = factory(
+               { requestRender() {}, terminal: { rows: 40 } },
+               theme, getKeybindings(), (value) => { response = value; },
+            );
+            component.handleInput(comment ? "\x07" : "\x1b[A");
+            component.handleInput("\r");
+            for (const key of "ijk") component.handleInput(key);
+            component.handleInput("\r");
+            return response;
+         },
+      },
+   });
+   assert.deepEqual(result.details.response, comment
+      ? { kind: "selection", selections: ["Alpha"], comment: "ijk" }
+      : { kind: "freeform", text: "ijk" });
+}
+console.log("Host smoke passed: registration, schema, batch schema validation, RPC select, redacted event, thrown errors, error rendering, native TUI, batch TUI, modal filtering, editor keys.");

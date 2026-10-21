@@ -10,7 +10,7 @@ High-quality video: [ask-user-demo.mp4](https://github.com/edlsh/pi-ask-user/blo
 
 ## Features
 
-- Searchable single-select option lists with wrapped titles and descriptions
+- Searchable single-select option lists with wrapped titles and descriptions. Press `i` to filter and use `j` / `k` to navigate.
 - Responsive split-pane details preview on wide terminals, with a persistent single-column preference
 - Multi-select option lists
 - Batches of 2-4 independent questions in one prompt, with a review page before submitting
@@ -227,8 +227,9 @@ While an `ask_user` prompt is open:
 | `ctrl+g` (configurable via `commentToggleKey`) | Toggle the optional comment/extra-context row (when `allowComment: true`). |
 | `ctrl+e` | Expand or collapse oversized context while choosing an option. If another configured ask shortcut owns it, the prompt shows `ctrl+x` or `ctrl+y` instead. |
 | `enter` | Confirm the focused option, submit a freeform response, or submit/skip an optional comment. In a batch, confirming records the answer; on the review page it submits. |
-| `esc` | Clear the search filter, exit freeform/comment mode, or cancel the prompt. In a batch, cancelling cancels every question. |
-| `↑` / `↓`, `ctrl+k` / `ctrl+j` | Navigate options. `ctrl+k` / `ctrl+j` (vim-style) work while typing in searchable prompts without disturbing the filter. On a batch's review page they scroll the answers. |
+| `i` | Start typing a filter in a single-select list. Until then, letters do not change the filter. |
+| `esc` | Leave filter typing mode and keep the filter. Press again to clear a nonempty filter, then again to cancel. In freeform/comment mode, return to the choices. Cancelling a batch cancels every question. |
+| `k` / `j`, `↑` / `↓`, `ctrl+k` / `ctrl+j` | Navigate options. While typing a filter, `j` / `k` add text; arrows and `ctrl+k` / `ctrl+j` still navigate. On a batch's review page these keys scroll the answers. |
 | `tab` / `shift+tab` | Single question: move down/up through the options. Batch: switch to the next/previous question or the review page. |
 | `1`-`4` | Batch review page: jump back to that question. |
 

@@ -483,8 +483,7 @@ const DEFAULT_COMMENT_TOGGLE_KEY = "ctrl+g";
 const CONTEXT_TOGGLE_KEYS = [Key.ctrl("e"), Key.ctrl("x"), Key.ctrl("y")];
 const INLINE_CONTEXT_MAX_ROWS = 3;
 
-// Vim-style aliases for navigating option lists. ctrl+j/k are safe in the
-// searchable single-select because they don't collide with fuzzy-search input.
+// Ctrl+j/k navigate even while typing a filter; plain j/k are navigation-only.
 const VIM_SELECT_UP_KEY = Key.ctrl("k");
 const VIM_SELECT_DOWN_KEY = Key.ctrl("j");
 const PROMPT_SCROLL_PAGE_UP_KEY = Key.pageUp;
@@ -502,19 +501,25 @@ function getOverlayMaxRenderLinesForRows(rows: number): number {
    return Math.min(availableRows, Math.max(minimumRows, ratioRows));
 }
 
-function matchesSelectUp(data: string, keybindings: KeybindingsManager): boolean {
+function matchesSelectUp(data: string, keybindings: KeybindingsManager, filtering = false) {
+   if (filtering && (matchesKey(data, "j") || matchesKey(data, "k"))) return false;
    return (
       keybindings.matches(data, "tui.select.up") ||
+      (filtering && matchesKey(data, Key.up)) ||
       matchesKey(data, Key.shift("tab")) ||
-      matchesKey(data, VIM_SELECT_UP_KEY)
+      matchesKey(data, VIM_SELECT_UP_KEY) ||
+      matchesKey(data, "k")
    );
 }
 
-function matchesSelectDown(data: string, keybindings: KeybindingsManager): boolean {
+function matchesSelectDown(data: string, keybindings: KeybindingsManager, filtering = false) {
+   if (filtering && (matchesKey(data, "j") || matchesKey(data, "k"))) return false;
    return (
       keybindings.matches(data, "tui.select.down") ||
+      (filtering && matchesKey(data, Key.down)) ||
       matchesKey(data, Key.tab) ||
-      matchesKey(data, VIM_SELECT_DOWN_KEY)
+      matchesKey(data, VIM_SELECT_DOWN_KEY) ||
+      matchesKey(data, "j")
    );
 }
 
@@ -865,6 +870,7 @@ class WrappedSingleSelectList implements Component {
    private commentToggle: ResolvedShortcut;
    private selectedIndex = 0;
    private searchQuery = "";
+   isFiltering = false;
    private commentEnabled = false;
    private maxVisibleRows = 12;
    private cachedWidth?: number;
@@ -1007,8 +1013,10 @@ class WrappedSingleSelectList implements Component {
    private buildListLines(width: number, filteredOptions: QuestionOption[], hideDescriptions = false): string[] {
       const lines: string[] = [];
       const count = this.getItemCount(filteredOptions);
-      const searchValue = this.searchQuery ? this.theme.fg("text", this.searchQuery) : this.theme.fg("dim", "type to filter");
-      lines.push(truncateToWidth(`${this.theme.fg("accent", "Filter:")} ${searchValue}`, width, ""));
+      const searchValue = this.searchQuery ? this.theme.fg("text", this.searchQuery)
+         : this.theme.fg("dim", this.isFiltering ? "type to filter" : "press i to filter");
+      const searchLabel = this.isFiltering ? "Filter (typing):" : "Filter:";
+      lines.push(truncateToWidth(`${this.theme.fg("accent", searchLabel)} ${searchValue}`, width, ""));
 
       if (this.searchQuery && filteredOptions.length === 0) {
          lines.push(truncateToWidth(this.theme.fg("warning", "No matching options"), width, ""));
@@ -1123,7 +1131,7 @@ class WrappedSingleSelectList implements Component {
       }));
       if (this.allowComment) rows.push({ id: "comment", kind: "comment", label: COMMENT_TOGGLE_LABEL, on: this.commentEnabled });
       if (this.allowFreeform) rows.push({ id: "freeform", kind: "freeform", label: "Other" });
-      return { rows, selected: this.selectedIndex, query: this.searchQuery };
+      return { rows, selected: this.selectedIndex, query: this.searchQuery, filtering: this.isFiltering };
    }
 
    /** Select row `row` of nativeSheet(); `activate` then acts as Enter on it. */
@@ -1136,6 +1144,12 @@ class WrappedSingleSelectList implements Component {
    }
 
    handleInput(data: string): void {
+      if (isKeyRelease(data)) return;
+      if (this.isFiltering && matchesKey(data, Key.escape)) {
+         this.isFiltering = false;
+         this.invalidate();
+         return;
+      }
       if (this.searchQuery && matchesKey(data, Key.escape)) {
          this.setSearchQuery("");
          return;
@@ -1151,23 +1165,29 @@ class WrappedSingleSelectList implements Component {
          return;
       }
 
+      if (!this.isFiltering && matchesKey(data, "i")) {
+         this.isFiltering = true;
+         this.invalidate();
+         return;
+      }
+
       const filteredOptions = this.getFilteredOptions();
       const count = this.getItemCount(filteredOptions);
 
-      if (matchesSelectUp(data, this.keybindings) && count > 0) {
+      if (matchesSelectUp(data, this.keybindings, this.isFiltering) && count > 0) {
          this.selectedIndex = this.selectedIndex === 0 ? count - 1 : this.selectedIndex - 1;
          this.invalidate();
          return;
       }
 
-      if (matchesSelectDown(data, this.keybindings) && count > 0) {
+      if (matchesSelectDown(data, this.keybindings, this.isFiltering) && count > 0) {
          this.selectedIndex = this.selectedIndex === count - 1 ? 0 : this.selectedIndex + 1;
          this.invalidate();
          return;
       }
 
       const numMatch = data.match(/^[1-9]$/);
-      if (numMatch && filteredOptions.length > 0) {
+      if (!this.isFiltering && numMatch && filteredOptions.length > 0) {
          const idx = Number.parseInt(numMatch[0], 10) - 1;
          if (idx >= 0 && idx < filteredOptions.length) {
             this.selectedIndex = idx;
@@ -1176,7 +1196,7 @@ class WrappedSingleSelectList implements Component {
          }
       }
 
-      if (matchesKey(data, Key.space) && count > 0 && this.isCommentToggleRow(this.selectedIndex, filteredOptions)) {
+      if (!this.isFiltering && matchesKey(data, Key.space) && count > 0 && this.isCommentToggleRow(this.selectedIndex, filteredOptions)) {
          this.toggleComment();
          return;
       }
@@ -1185,6 +1205,8 @@ class WrappedSingleSelectList implements Component {
          this.confirm(filteredOptions);
          return;
       }
+
+      if (!this.isFiltering) return;
 
       if (this.keybindings.matches(data, "tui.editor.deleteCharBackward") || matchesKey(data, Key.backspace)) {
          this.popSearchCharacter();
@@ -1812,7 +1834,7 @@ class AskComponent extends Container {
       if (this.allowMultiple) {
          const hints = [
             this.navigationHint,
-            literalHint(theme, "↑↓", "navigate"),
+            literalHint(theme, "j/k ↑↓", "navigate"),
             literalHint(theme, "space", "toggle"),
             commentHint,
             contextHint,
@@ -1830,15 +1852,16 @@ class AskComponent extends Container {
             .filter((key) => key !== "escape" && key !== "esc");
          const hints = [
             this.navigationHint,
-            literalHint(theme, "type", "filter"),
+            literalHint(theme, this.singleSelectList?.isFiltering ? "type" : "i", "filter"),
             commentHint,
             contextHint,
             promptScrollHint,
-            keybindingHint(theme, this.keybindings, "tui.editor.deleteCharBackward", "erase"),
-            literalHint(theme, "↑↓", "navigate"),
+            this.singleSelectList?.isFiltering
+               ? keybindingHint(theme, this.keybindings, "tui.editor.deleteCharBackward", "erase") : null,
+            literalHint(theme, this.singleSelectList?.isFiltering ? "↑↓" : "j/k ↑↓", "navigate"),
             overlayHint,
             keybindingHint(theme, this.keybindings, "tui.select.confirm", "select"),
-            literalHint(theme, "esc", "clear/cancel"),
+            literalHint(theme, "esc", this.singleSelectList?.isFiltering ? "navigate" : "clear/cancel"),
             alternateCancelKeys.length > 0
                ? literalHint(theme, formatKeyList(alternateCancelKeys), "cancel")
                : null,
@@ -1923,6 +1946,7 @@ class AskComponent extends Container {
          selected: sheet.selected,
          multiple: this.allowMultiple,
          query: sheet.query,
+         filtering: sheet.filtering,
          tabs: tabs?.tabs,
       });
    }
@@ -2174,6 +2198,7 @@ class AskComponent extends Container {
       }
 
       this.ensureSingleSelectList().handleInput?.(data);
+      this.updateHelpText();
       this.tui.requestRender();
    }
 }
@@ -2262,8 +2287,7 @@ class BatchAskComponent implements Component {
 
    handleInput(data: string): void {
       const pageCount = this.questions.length + 1;
-      // Tab and shift+tab move between pages here; inside a page, arrows and
-      // ctrl+j/k still move the option selection.
+      // Tab switches pages; each page keeps its own selection and filter mode.
       if (matchesKey(data, Key.tab)) {
          this.goTo((this.current + 1) % pageCount);
          return;

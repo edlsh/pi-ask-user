@@ -1277,6 +1277,7 @@ describe("ask_user", () => {
                      },
                   );
 
+                  component.handleInput("i");
                   component.handleInput("b");
                   component.handleInput("enter");
                   return resolved ?? null;
@@ -1288,6 +1289,60 @@ describe("ask_user", () => {
       expect(result.isError).not.toBe(true);
       expect(result.details.response).toEqual({ kind: "selection", selections: ["Beta"] });
       expect(result.details.cancelled).toBe(false);
+   });
+
+   test.each([
+      { name: "j moves down", keys: ["j"], selection: "June" },
+      { name: "k wraps up", keys: ["k"], selection: "Jki 2" },
+      { name: "j wraps down", keys: ["k", "j"], selection: "Alpha" },
+      { name: "letters and out-of-range digits do not start filtering", keys: ["x", "7"], selection: "Alpha" },
+      { name: "digits still select rows outside filter mode", keys: ["2"], selection: "June" },
+      { name: "i/j/k, spaces, and digits become filter text", keys: ["i", "j", "k", "i", " ", "1"], selection: "Jki 1" },
+      { name: "j/k remain filter text with remapped navigation", keys: ["i", "j", "k"], selection: "Jki 1", remapNavigation: true },
+      { name: "ctrl+j still works with remapped navigation", keys: ["i", "j", "ctrl+j"], selection: "Jki 1", remapNavigation: true },
+      { name: "down works while filtering with remapped navigation", keys: ["i", "j", "down"], selection: "Jki 1", remapNavigation: true },
+      { name: "up works while filtering with remapped navigation", keys: ["i", "j", "up"], selection: "Jki 2", remapNavigation: true },
+      { name: "arrows stay remapped outside filter mode", keys: ["j", "down", "up"], selection: "June", remapNavigation: true },
+      { name: "backspace recovers from no matches", keys: ["i", "z", "backspace", "k"], selection: "Kilo" },
+      { name: "Esc leaves an empty filter without cancelling", keys: ["i", "escape", "j"], selection: "June" },
+      { name: "Esc retains the filter for j navigation", keys: ["i", "j", "escape", "j"], selection: "Jki 1" },
+      { name: "backspace does not edit a retained filter", keys: ["i", "j", "escape", "backspace"], selection: "June" },
+      { name: "i resumes editing the retained filter", keys: ["i", "j", "escape", "i", "k"], selection: "Jki 1" },
+      { name: "ctrl+j works while filtering", keys: ["i", "j", "ctrl+j"], selection: "Jki 1" },
+      { name: "ctrl+k works while filtering", keys: ["i", "j", "ctrl+k"], selection: "Jki 2" },
+      { name: "a second Esc clears the retained filter", keys: ["i", "k", "escape", "escape"], selection: "Alpha" },
+      { name: "Ctrl+C cancels while filtering", keys: ["i", "j", "ctrl+c"], selection: null },
+      { name: "Esc cancels after leaving and clearing the filter", keys: ["i", "j", "escape", "escape", "escape"], selection: null },
+      { name: "j/k navigate multi-select without clearing checks", keys: ["j", "space", "k"], selection: "June", multiple: true },
+   ])("modal selection: $name", async ({ keys, selection, multiple = false, remapNavigation = false }) => {
+      const tool = await setupTool();
+      for (const displayMode of ["inline", "overlay"]) {
+         const result = await tool.execute("modal-keys", {
+            question: "Choose an option",
+            options: ["Alpha", "June", "Kilo", "Jki 1", "Jki 2"],
+            allowFreeform: false,
+            allowComment: false,
+            allowMultiple: multiple,
+            displayMode,
+         }, undefined, undefined, {
+            hasUI: true,
+            ui: {
+               custom: async (factory: AskComponentFactory) => {
+                  let resolved: unknown;
+                  const component = factory(
+                     { requestRender() {}, terminal: { rows: 24 } },
+                     createTheme(),
+                     createKeybindings(remapNavigation ? { "tui.select.down": ["j"], "tui.select.up": ["k"] } : undefined),
+                     (value) => { resolved = value; },
+                  );
+                  for (const key of [...keys, "enter"]) component.handleInput(key);
+                  return resolved ?? null;
+               },
+            },
+         });
+         expect(result.details.cancelled).toBe(selection === null);
+         expect(result.details.response).toEqual(selection === null ? null : { kind: "selection", selections: [selection] });
+      }
    });
 
    test("navigates single-select options with ctrl+j (vim down)", async () => {
@@ -1367,7 +1422,7 @@ describe("ask_user", () => {
       expect(result.details.cancelled).toBe(false);
    });
 
-   test("treats bare j as fuzzy-search input rather than navigation", async () => {
+   test("treats bare j as filter text after pressing i", async () => {
       const tool = await setupTool();
 
       const result = await tool.execute(
@@ -1392,6 +1447,7 @@ describe("ask_user", () => {
                      },
                   );
 
+                  component.handleInput("i");
                   component.handleInput("j");
                   component.handleInput("enter");
                   return resolved ?? null;
@@ -1471,6 +1527,7 @@ describe("ask_user", () => {
                      },
                   );
 
+                  component.handleInput("i");
                   component.handleInput("c");
                   component.handleInput("enter");
                   return resolved ?? null;
@@ -1558,7 +1615,7 @@ describe("ask_user", () => {
       expect(result.details.response).toEqual({ kind: "selection", selections: ["Chrome"] });
    });
 
-   test("treats out-of-range number keys as search input in single-select mode", async () => {
+   test("treats number keys as search input after pressing i", async () => {
       const tool = await setupTool();
 
       const result = await tool.execute(
@@ -1583,6 +1640,7 @@ describe("ask_user", () => {
                      },
                   );
 
+                  component.handleInput("i");
                   component.handleInput("7");
                   component.handleInput("enter");
                   return resolved ?? null;
@@ -1623,6 +1681,7 @@ describe("ask_user", () => {
                      },
                   );
 
+                  component.handleInput("i");
                   component.handleInput("z");
                   component.handleInput("z");
                   component.handleInput("z");
@@ -1928,6 +1987,7 @@ describe("ask_user", () => {
                      createKeybindings(),
                      (value: unknown) => { resolved = value; },
                   );
+                  component.handleInput("i");
                   component.handleInput("b");
                   collapsed = component.render(50).join("\n");
                   component.handleInput("ctrl+e");
@@ -3663,6 +3723,26 @@ describe("questions batch", () => {
       ]);
    });
 
+   test("each page retains its filter mode when switching questions", async () => {
+      const tool = await setupTool();
+      const { state, custom } = mountBatchPrompt();
+      const execution = tool.execute(
+         "id",
+         { questions: [{ question: "First?", options: ["A", "B", "C"] }, { question: "Second?", options: ["X", "Y"] }] },
+         undefined, undefined, { hasUI: true, ui: { custom } },
+      );
+      const prompt = state.component;
+      press(prompt, "i", "b", "tab");
+      expect(prompt.render(100).join("\n")).toContain("press i to filter");
+      press(prompt, "j", "shift+tab");
+      expect(prompt.render(100).join("\n")).toContain("Filter (typing): b");
+      press(prompt, "escape", "enter", "enter", "enter");
+      expect((await execution).details.answers).toEqual([
+         { status: "answered", response: { kind: "selection", selections: ["B"] } },
+         { status: "answered", response: { kind: "selection", selections: ["Y"] } },
+      ]);
+   });
+
    test("submitting with unanswered questions needs a second confirmation and reports the skips", async () => {
       stubEnv("PI_ASK_USER_EMIT_FULL_EVENTS", "false");
       const tool = await setupTool();
@@ -4151,6 +4231,7 @@ describe("Tern native presentation", () => {
 
    interface NativePrompt {
       [NATIVE_COMPONENT](native: TernContext): TernNode;
+      handleInput(data: string): void;
    }
    type TuiStub = { requestRender(): void; terminal: { rows: number } };
    type ThemeStub = { fg(color: string, text: string): string; bold(text: string): string };
@@ -4179,6 +4260,25 @@ describe("Tern native presentation", () => {
          },
       });
    }
+
+   test("the native sheet shows filter mode and keeps clicks aligned with filtered rows", async () => {
+      const result = await run({ question: "Which one?", options: ["Alpha", "June", "Jki"] }, (component) => {
+         expect(JSON.stringify(present(component).node)).toContain("press i to filter");
+         component.handleInput("i");
+         expect(JSON.stringify(present(component).node)).toContain("Filter (typing):");
+         component.handleInput("j");
+         component.handleInput("escape");
+         const navigation = present(component);
+         expect(JSON.stringify(navigation.node)).not.toContain("Filter (typing):");
+         const options = navigation.node.c[0]?.c.find((child) => child.key === "options");
+         expect(options?.c.map((child) => child.key)).toEqual(["o1", "o2", "freeform"]);
+         component.handleInput("j");
+         const selected = present(component);
+         expect(selected.node.c[0]?.c.find((child) => child.key === "options")?.p.selected).toBe("o2");
+         selected.fire({ ev: "select", id: list, item: `${list}.o2` });
+      });
+      expect(result.details.response).toEqual({ kind: "selection", selections: ["Jki"] });
+   });
 
    test("a click on an option answers a single question", async () => {
       const result = await run({ question: "Which one?", options: ["A", "B"] }, (component) => {
