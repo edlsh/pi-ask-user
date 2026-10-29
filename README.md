@@ -246,7 +246,7 @@ If context wraps beyond the available decision area, `ask_user` collapses it int
 
 ### Tern
 
-With [pi-tern](https://github.com/edlsh/pi-tern) in a [Tern](https://stencil.so) pane, the prompt is a native sheet laid out like omp's ask dialog: question tabs for a batch, the question and context as markdown, the options as a clickable list, a native editor for custom responses and comments, a review page and an action bar. Keys still go to `ask_user` as in any terminal. The tool card shows each question over all of its options, with a check on the chosen ones. Both hooks use pi-tern's global symbols, so nothing changes when pi-tern isn't installed.
+With [pi-tern](https://github.com/edlsh/pi-tern) in a [Tern](https://stencil.so) pane, the prompt takes the composer's place, laid out like omp's ask dialog: question tabs for a batch, the question and context as markdown, the options as a clickable list, a native editor for custom responses and comments, a review page and an action bar. Keys still go to `ask_user` as in any terminal. The tool card shows each question over all of its options, with a check on the chosen ones. Both hooks use pi-tern's global symbols, so nothing changes when pi-tern isn't installed.
 
 ### Events
 
