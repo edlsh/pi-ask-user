@@ -4147,7 +4147,7 @@ describe("questions batch", () => {
 
 describe("Tern native presentation", () => {
    // pi-tern names list children and the emitting node by full id, as Tern does.
-   const list = "layer.dialog.sheet.options";
+   const list = "dock.dialog.options";
 
    interface NativePrompt {
       [NATIVE_COMPONENT](native: TernContext): TernNode;
@@ -4183,7 +4183,7 @@ describe("Tern native presentation", () => {
    test("a click on an option answers a single question", async () => {
       const result = await run({ question: "Which one?", options: ["A", "B"] }, (component) => {
          const { node, fire } = present(component);
-         expect(node.k).toBe("overlay");
+         expect(node).toMatchObject({ k: "col", p: { role: "omp.editor.ask" } });
          fire({ ev: "select", id: list, item: `${list}.o1` });
       });
       expect(result.details.response).toEqual({ kind: "selection", selections: ["B"] });
@@ -4199,7 +4199,7 @@ describe("Tern native presentation", () => {
          present(component).fire({ ev: "select", id: list, item: `${list}.o1` });
          // A multi-select click ticks the option; it is not an answer until Submit.
          present(component).fire({ ev: "select", id: list, item: `${list}.o1` });
-         const options = present(component).node.c[0]?.c.find((child) => child.key === "options");
+         const options = present(component).node.c.find((child) => child.key === "options");
          expect(options?.c[1]?.p.icon).toBe("check");
          present(component).fire({ ev: "action", act: "submit" });
          const review = present(component);
@@ -4217,12 +4217,12 @@ describe("Tern native presentation", () => {
          question: "Project setup",
          questions: [{ question: "Region?", options: ["us", "eu"] }, { question: "Tier?", options: ["free", "pro"] }],
       }, (component) => {
-         const headingOf = () => present(component).node.c[0]?.c.find((child) => child.key === "heading")?.p.text;
-         expect(headingOf()).toBe("Project setup");
+         const headingOf = () => JSON.stringify(present(component).node.c.find((child) => child.key === "heading")?.p.spans);
+         expect(headingOf()).toBe(JSON.stringify([{ t: "Project setup" }]));
          present(component).fire({ ev: "select", id: list, item: `${list}.o0` });
          present(component).fire({ ev: "select", id: list, item: `${list}.o0` });
          expect(JSON.stringify(present(component).node)).toContain("Review");
-         expect(headingOf()).toBe("Project setup");
+         expect(headingOf()).toBe(JSON.stringify([{ t: "Project setup" }]));
          present(component).fire({ ev: "action", act: "submit" });
       });
    });

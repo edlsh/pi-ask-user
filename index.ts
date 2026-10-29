@@ -50,6 +50,7 @@ import {
    type QuestionTabs,
    registerTernTool,
    reviewSheet,
+   shortLabel,
    type TernContext,
    type TernEvent,
    type TernNode,
@@ -2324,7 +2325,7 @@ class BatchAskComponent implements Component {
          tabs: [
             ...this.questions.map((entry, index) => ({
                id: `q${index}`,
-               label: `${this.answers[index] ? "✓ " : ""}${truncateToWidth(entry.question, 28, "…")}`,
+               label: `${this.answers[index] ? "✓ " : ""}${shortLabel(entry.question)}`,
             })),
             { id: "review", label: "Review" },
          ],

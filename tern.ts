@@ -3,8 +3,9 @@
  * contracts are global symbols, so this works when pi-tern is installed and
  * costs nothing when it is not; nothing here imports pi-tern.
  *
- * - Prompts implement `Symbol.for("pi-tern.component.v1")` and return a native
- *   picker sheet (selection) or overlay (custom response, comment). Pointer
+ * - Prompts implement `Symbol.for("pi-tern.component.v1")` and return omp's
+ *   ask dialog shape, which pi-tern draws in the composer's place: the answers
+ *   as a list, or a native editor for a custom response or comment. Pointer
  *   events call the prompt's own state transitions; keys still go to pi.
  * - The ask_user tool card registers in `Symbol.for("pi-tern.tools.v1")`: the
  *   question over every option, the chosen ones checked, like omp's ask card.
@@ -79,10 +80,22 @@ export function registerTernTool(pi: Pick<ExtensionAPI, "on">, name: string, ren
 
 // ── Prompt sheets ────────────────────────────────────────────────────────────
 //
-// The same structure and element roles as omp's ask dialog (`omp.overlay.ask`,
+// The same structure and element roles as omp's ask dialog (`omp.editor.ask`,
 // `omp.ask.*`, `omp.actions`), so Tern's built-in stylesheet draws them alike:
-// a bottom sheet over the composer with the question tabs, the question as
-// markdown, the answers as a list, and an action bar.
+// in the dock, in the composer's place and framed as the composer is, with the
+// question tabs, the question as markdown, the answers as a list, and an action
+// bar as the footer. Not a modal overlay: Tern's overlay list rules override
+// the ask rows' layout, and a bottom sheet covered the transcript.
+
+/**
+ * A one-line label of at most `max` characters for a tab or review key. Plain
+ * text: pi-tui's truncation ends in ANSI resets, which Tern shows verbatim.
+ */
+export function shortLabel(text: string, max = 28): string {
+   const line = text.replace(/\s+/g, " ").trim();
+   const chars = Array.from(line);
+   return chars.length <= max ? line : `${chars.slice(0, max - 1).join("").trimEnd()}…`;
+}
 
 /** One row of a selection list, in the list's own order (so indices match its keyboard state). */
 export interface ChoiceRow {
@@ -137,16 +150,20 @@ function askSheet(tabs: QuestionTabs | undefined, children: readonly (TernNode |
          n("tabs", { items: tabs.tabs.map((tab) => ({ ...tab })), active: tabs.tab, role: "omp.ask.questions", actions: { click: "select" } }, [], "tabs"),
       ], "head")
       : null;
-   const heading = tabs?.heading ? n("md", { text: tabs.heading, role: "omp.ask.heading" }, [], "heading") : null;
-   return n("overlay", { role: "omp.overlay.ask", anchor: "bottom", size: "md", modal: true }, [
-      n("col", { gap: "md" }, [head, heading, ...children], "sheet"),
-   ]);
+   // Secondary lines use omp's notice role, which the ask sheet pads and mutes.
+   const heading = tabs?.heading ? notice([{ t: tabs.heading }], "heading") : null;
+   return n("col", { role: "omp.editor.ask", gap: "md" }, [head, heading, ...children]);
 }
 
+function notice(spans: readonly { t: string; s?: string }[], key: string): TernNode {
+   return n("text", { spans: spans.map((span) => ({ ...span })), wrap: "word", role: "omp.ask.notice" }, [], key);
+}
+
+/** The question, then its context in omp's preview box (padded, and it scrolls when long). */
 function questionNodes(question: string, context: string | undefined): TernNode[] {
    return [
       n("md", { text: question, role: "omp.ask.question" }, [], "question"),
-      ...(context ? [n("md", { text: context, role: "omp.tool.context" }, [], "context")] : []),
+      ...(context ? [n("md", { text: context, role: "omp.ask.preview" }, [], "context")] : []),
    ];
 }
 
@@ -165,7 +182,7 @@ export function choiceSheet(sheet: ChoiceSheet): TernNode {
    });
    return askSheet(sheet.tabs, [
       ...questionNodes(sheet.question, sheet.context),
-      sheet.query ? n("text", { spans: [{ t: "Filter ", s: "muted" }, { t: sheet.query, s: "accent" }] }, [], "filter") : null,
+      sheet.query ? notice([{ t: "Filter " }, { t: sheet.query, s: "accent" }], "filter") : null,
       n("list", { selected: sheet.rows[sheet.selected]?.id ?? null, role: "omp.ask.options", empty: "No matching options" }, items, CHOICE_LIST_KEY),
       actionBar([button("Cancel", "cancel", "esc"), button(sheet.multiple ? "Submit" : "Select", "submit", "enter", "accent")]),
    ]);
@@ -188,7 +205,7 @@ export interface TextSheet {
 export function textSheet(sheet: TextSheet): TernNode {
    return askSheet(sheet.tabs, [
       ...questionNodes(sheet.question, sheet.context),
-      sheet.lead ? n("text", { spans: [{ t: sheet.lead, s: "muted" }], wrap: "word" }, [], "lead") : null,
+      sheet.lead ? notice([{ t: sheet.lead }], "lead") : null,
       n("editor", { text: sheet.text, cursor: sheet.cursor, maxLines: 8, placeholder: sheet.placeholder }, [], "field"),
       actionBar([button(sheet.escape === "back" ? "Back" : "Cancel", "cancel", "esc"), button("Submit", "submit", "enter", "accent")]),
    ]);
@@ -207,15 +224,15 @@ export function reviewSheet(sheet: ReviewSheet): TernNode {
    const noun = `question${unanswered === 1 ? "" : "s"}`;
    return askSheet(sheet.tabs, [
       unanswered > 0
-         ? n("text", {
-            spans: [{ t: sheet.confirmSkips ? `${unanswered} unanswered ${noun} — submit again to skip ${unanswered === 1 ? "it" : "them"}.` : `${unanswered} unanswered ${noun}.`, s: "warning" }],
-         }, [], "warning")
+         ? notice([{ t: sheet.confirmSkips ? `${unanswered} unanswered ${noun} — submit again to skip ${unanswered === 1 ? "it" : "them"}.` : `${unanswered} unanswered ${noun}.`, s: "warning" }], "warning")
          : null,
+      // Keys stay short, as the tabs name the questions: a kv key does not wrap, so a whole question pushed the answers out.
       n("kv", {
          items: sheet.rows.map((row, index) => ({
-            k: `${index + 1}. ${row.question}`,
+            k: `${index + 1}. ${shortLabel(row.question)}`,
             v: row.answer === undefined ? [{ t: "unanswered", s: "warning" }] : [{ t: row.answer }],
          })),
+         role: "omp.ask.answers",
       }, [], "answers"),
       actionBar([button("Cancel", "cancel", "esc"), button(unanswered > 0 && sheet.confirmSkips ? "Submit with skips" : "Submit", "submit", "enter", "accent")]),
    ]);
