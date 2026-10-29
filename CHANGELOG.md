@@ -1,10 +1,10 @@
 # Changelog
 
-## Unreleased
+## [0.17.1](https://github.com/edlsh/pi-ask-user/releases/tag/v0.17.1) - 2026-10-29
 
 ### Fixed
 
-- In Tern, the native prompt is drawn in the composer's place (omp's current `omp.editor.ask` shape) instead of a modal sheet over the transcript. Option marks no longer overlap the option labels, the prompt stays within 60% of the pane with the context and options scrolling inside it, the transcript stays visible, batch tabs no longer show raw ANSI resets, and the review page keeps its answers in view beside short question keys. Needs a pi-tern that places composer-shaped presentations in the dock.
+- In Tern, the native prompt is drawn in the composer's place (omp's current `omp.editor.ask` shape) instead of a modal sheet over the transcript. Option marks no longer overlap the option labels, the prompt stays within 60% of the pane with the context and options scrolling inside it, the transcript stays visible, batch tabs no longer show raw ANSI resets, and the review page keeps its answers in view beside short question keys. Needs a pi-tern that places composer-shaped presentations in the dock. ([#89](https://github.com/edlsh/pi-ask-user/pull/89))
 
 ## [0.17.0](https://github.com/edlsh/pi-ask-user/releases/tag/v0.17.0) - 2026-10-19
 
