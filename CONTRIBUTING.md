@@ -36,6 +36,9 @@ non-ASCII text. Automated smoke checks do not replace interactive verification.
 
 ## Pull requests
 
+This project does not accept outside pull requests. Please open an issue for
+bugs or feature requests instead; changes are made by the maintainer.
+
 Keep changes small and explain their behavior and tests. Include a regression
 test for a bug fix. For cancellation, verify that the dialog closes, owned
 listeners/timers are released, and no successful answer is emitted afterward.
