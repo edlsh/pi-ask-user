@@ -1,0 +1,24 @@
+name: Close stale needs-info issues
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  issues: write
+
+jobs:
+  stale:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/stale@v11
+        with:
+          only-labels: needs-info
+          days-before-stale: 14
+          days-before-close: 7
+          days-before-pr-stale: -1
+          days-before-pr-close: -1
+          stale-issue-label: stale
+          stale-issue-message: This issue is still missing the information requested above. It will be closed in 7 days unless it is updated.
+          close-issue-message: Closing because the requested information was not provided. Comment with the details and it can be reopened.
