@@ -63,7 +63,7 @@ The registered tool name is:
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `question` | `string?` | — | The question to ask the user. Each call needs `question` or `questions`; when both are sent, `question` is only shown as the batch heading |
-| `questions` | `{question, context?, options?, allowMultiple?, allowFreeform?}[]?` | — | 2-4 independent questions shown together, used instead of `question`. Set `context`, `options`, `allowMultiple`, and `allowFreeform` on each entry; passing them at the top level as well is an error. The remaining parameters apply to the whole batch. See [Asking several questions at once](#asking-several-questions-at-once) |
+| `questions` | `{question, context?, options?, allowMultiple?, allowFreeform?}[]?` | — | 2-4 independent questions shown together, used instead of `question`. Set `context`, `options`, `allowMultiple`, and `allowFreeform` on each entry; top-level values for them are ignored. The remaining parameters apply to the whole batch. See [Asking several questions at once](#asking-several-questions-at-once) |
 | `context` | `string?` | — | Relevant context summary shown before the question |
 | `options` | `{title, description?}[]?` | `[]` | Multiple-choice options. The schema is a flat object shape (no `anyOf`, which some provider proxies strip or reject); plain strings and common alias keys (`label`, `text`, `value`, `name`, `option`) are still accepted at runtime |
 | `allowMultiple` | `boolean?` | `false` | Enable multi-select mode |

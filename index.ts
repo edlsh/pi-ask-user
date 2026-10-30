@@ -217,8 +217,6 @@ function isBatchDetails<T extends AskToolDetails | AskBatchDetails>(details: T):
 
 const BATCH_MIN_QUESTIONS = 2;
 const BATCH_MAX_QUESTIONS = 4;
-// Single-question fields that a batch sets per entry instead of at the top level.
-const BATCH_ENTRY_FIELDS = ["context", "options", "allowMultiple", "allowFreeform"] as const;
 
 type AskUIResult = AskResponse;
 
@@ -2786,13 +2784,9 @@ function batchHeading(params: AskParams): string | undefined {
  * correct the call.
  */
 function normalizeBatchQuestions(params: AskParams): BatchQuestion[] {
+   // Top-level context/options/allowMultiple/allowFreeform are ignored here: entries carry their own,
+   // and models that echo schema defaults would otherwise loop on a validation error (#88).
    const { questions } = params;
-   const misplaced = BATCH_ENTRY_FIELDS.filter((field) => params[field] != null);
-   if (misplaced.length > 0) {
-      throw new Error(
-         `${misplaced.join(", ")} cannot be set at the top level together with questions. Set them on each questions entry instead.`,
-      );
-   }
    if (!Array.isArray(questions)) {
       throw new Error(`questions must be an array of ${BATCH_MIN_QUESTIONS}-${BATCH_MAX_QUESTIONS} question objects.`);
    }
