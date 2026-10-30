@@ -3502,11 +3502,6 @@ describe("questions batch", () => {
          expected: ["in questions[1] were malformed", "{ \"title\": \"Short label\""],
       },
       {
-         name: "single-question fields at the top level",
-         params: { context: "shared", options: ["A"], questions: twoQuestions },
-         expected: ["context, options cannot be set at the top level"],
-      },
-      {
          name: "no interactive UI",
          params: { questions: [{ question: "First?", context: "Why it matters", options: ["Yes", "No"] }, { question: "Second?" }] },
          expected: ["requires interactive mode", "1. First?", "Context: Why it matters", "   1. Yes", "   2. No", "2. Second?"],
@@ -3548,6 +3543,21 @@ describe("questions batch", () => {
       expect(result.details.heading).toBe("Project setup\nChoose defaults");
       expect(result.details.questions.map((entry: { question: string }) => entry.question)).toEqual(["Which database?", "Which ORM?"]);
       expect(result.content[0].text).toBe("Project setup\nChoose defaults\nUser answered 2 of 2 questions:\n1. Which database? → Postgres\n2. Which ORM? → Drizzle");
+   });
+
+test("top-level single-question fields sent with questions are ignored (#88)", async () => {
+      const tool = await setupTool();
+      const { state, custom } = mountBatchPrompt();
+      const execution = tool.execute(
+         "id",
+         { context: "", options: [], allowMultiple: false, allowFreeform: false, questions: [{ question: "Which database?", options: ["Postgres", "SQLite"] }, { question: "Which ORM?", options: ["Drizzle", "Prisma"] }] },
+         undefined,
+         undefined,
+         { hasUI: true, ui: { custom } },
+      );
+      press(state.component, "enter", "enter", "enter");
+      const result = await execution;
+      expect(result.content[0].text).toBe("User answered 2 of 2 questions:\n1. Which database? → Postgres\n2. Which ORM? → Drizzle");
    });
 
    test("records each page's answer and publishes nothing until the review page submits", async () => {
@@ -4212,7 +4222,7 @@ describe("Tern native presentation", () => {
       ]);
    });
 
-   test("a batch heading shows on every native question sheet and the review", async () => {
+      test("a batch heading shows on every native question sheet and the review", async () => {
       await run({
          question: "Project setup",
          questions: [{ question: "Region?", options: ["us", "eu"] }, { question: "Tier?", options: ["free", "pro"] }],
