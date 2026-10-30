@@ -1,0 +1,25 @@
+name: Feature request
+description: Suggest a change. The codebase is kept small, so requests need a concrete use case.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What you were trying to do and where ask_user got in the way.
+    validations:
+      required: true
+  - type: textarea
+    id: workaround
+    attributes:
+      label: Current workaround
+      description: What you do today instead, or why there is none.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: The smallest change that would solve it.
+    validations:
+      required: true

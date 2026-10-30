@@ -1,0 +1,58 @@
+name: Bug report
+description: Something in ask_user behaves differently from the README.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Check that the bug still happens on the latest release. Remove private question or answer content before pasting.
+  - type: input
+    id: version
+    attributes:
+      label: pi-ask-user version
+      placeholder: "0.17.1"
+    validations:
+      required: true
+  - type: input
+    id: pi
+    attributes:
+      label: Pi host and version
+      placeholder: "pi 1.0.2"
+    validations:
+      required: true
+  - type: input
+    id: terminal
+    attributes:
+      label: Terminal and OS
+      placeholder: "kitty 0.43, macOS 26"
+    validations:
+      required: true
+  - type: dropdown
+    id: display
+    attributes:
+      label: Display mode
+      options: [overlay, inline, not sure]
+    validations:
+      required: true
+  - type: textarea
+    id: args
+    attributes:
+      label: Tool arguments
+      description: The ask_user call that triggered the bug, plus any PI_ASK_USER_* env vars or ask-user.json settings.
+      render: json
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1.
+        2.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs. actual
+    validations:
+      required: true
