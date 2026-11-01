@@ -15,16 +15,27 @@ jobs:
   release-please:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-      pull-requests: write
       actions: write
     steps:
+      # Release PRs opened with GITHUB_TOKEN don't trigger CI, so release-please
+      # acts as the edlsh-release-please GitHub App instead.
+      - name: Create a GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-issues: write
+
       - name: Update the release PR, or tag and release a merged one
         id: release
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ steps.app-token.outputs.token }}
 
-      # A release created with GITHUB_TOKEN does not trigger other workflows,
-      # so dispatch the publish workflow on the new tag directly.
+      # publish.yml only runs on workflow_dispatch, so dispatch it on the new tag.
       - name: Publish the new release to npm
         if: steps.release.outputs.release_created == 'true'
         env:
