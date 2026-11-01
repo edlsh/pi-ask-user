@@ -5,9 +5,7 @@
 
 ### Bug Fixes
 
-* ignore top-level single-question fields in questions batches ([44fba10](https://github.com/edlsh/pi-ask-user/commit/44fba10c43ddd06d3c11e033a3a2d962cb87fdd0))
 * ignore top-level single-question fields in questions batches ([#88](https://github.com/edlsh/pi-ask-user/issues/88)) ([7e2cf4d](https://github.com/edlsh/pi-ask-user/commit/7e2cf4d0dbda649f75edc92c6433e37cc4592328))
-* wrap single-select text by display width ([91f142d](https://github.com/edlsh/pi-ask-user/commit/91f142d7507258342aabe6ff734f71f039ebdd7a))
 * wrap single-select text by display width ([#95](https://github.com/edlsh/pi-ask-user/issues/95)) ([d0a16b3](https://github.com/edlsh/pi-ask-user/commit/d0a16b3b3b6f22204a2781aec2c3a6e65d48e1d5))
 
 ## [0.17.1](https://github.com/edlsh/pi-ask-user/releases/tag/v0.17.1) - 2026-10-29
