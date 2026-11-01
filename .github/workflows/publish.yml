@@ -1,8 +1,8 @@
 name: Publish to npm
 
+# Dispatched by release-please.yml on each new release tag. Run it by hand on a
+# tag to retry a failed publish.
 on:
-  release:
-    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -37,9 +37,9 @@ jobs:
         run: bun run check
 
       - name: Validate release tag matches package version
-        if: github.event_name == 'release'
+        if: github.ref_type == 'tag'
         env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           TAG="$RELEASE_TAG"
           TAG="${TAG#v}"
