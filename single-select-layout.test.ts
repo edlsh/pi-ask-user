@@ -1,7 +1,26 @@
 import { describe, expect, test } from "bun:test";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { renderSingleSelectRows } from "./single-select-layout";
 
 describe("renderSingleSelectRows", () => {
+	test("wraps wide CJK and emoji text by display columns without losing text", () => {
+		const title = "한국어로 된 아주 긴 옵션 제목은 상자 너비를 넘어갑니다 🎉🎉";
+		const description = "이 옵션은 아주 긴 설명을 가지고 있습니다. 줄바꿈이 제대로 되는지 확인해야 합니다.";
+		const width = 51;
+		const rows = renderSingleSelectRows({
+			options: [{ title, description }],
+			selectedIndex: 0,
+			width,
+			allowFreeform: false,
+		});
+
+		for (const row of rows) {
+			expect(visibleWidth(row.line)).toBeLessThanOrEqual(width);
+		}
+		const rendered = rows.map((r) => r.line).join("").replace(/\s+|→|1\./g, "");
+		expect(rendered).toBe(`${title}${description}`.replace(/\s+/g, ""));
+	});
+
 	test("wraps long option titles instead of truncating them away", () => {
 		const rows = renderSingleSelectRows({
 			options: [
