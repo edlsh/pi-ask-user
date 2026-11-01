@@ -3,8 +3,13 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getEventListeners } from "node:events";
+import * as realPiTui from "@earendil-works/pi-tui";
 import type { StringEnumBuilder } from "./index";
 import { NATIVE_COMPONENT, type TernContext, type TernEvent, type TernNode } from "./tern";
+
+// Snapshot the real pi-tui before beforeAll mocks it, so afterAll can restore
+// it for test files that run later in the same Bun process.
+const realPiTuiExports = { ...realPiTui };
 
 let editorInputs: string[] = [];
 let editorText = "";
@@ -222,6 +227,7 @@ beforeAll(() => {
 });
 
 afterAll(() => {
+   mock.module("@earendil-works/pi-tui", () => realPiTuiExports);
    if (originalAgentDir === undefined) {
       delete process.env.PI_CODING_AGENT_DIR;
    } else {

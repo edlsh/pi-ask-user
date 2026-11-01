@@ -1,3 +1,5 @@
+import { wrapTextWithAnsi } from "@earendil-works/pi-tui";
+
 export interface QuestionOption {
 	title: string;
 	description?: string;
@@ -19,48 +21,11 @@ export interface RenderSingleSelectRowsParams {
 	hideDescriptions?: boolean;
 }
 
+// Wrap by terminal columns, not UTF-16 length, so wide CJK/emoji text fits.
 function wrapText(text: string, width: number): string[] {
 	const normalized = text.replace(/\s+/g, " ").trim();
 	if (!normalized) return [""];
-	if (width <= 1) return normalized.split("");
-
-	const words = normalized.split(" ");
-	const lines: string[] = [];
-	let current = "";
-
-	for (const word of words) {
-		if (!current) {
-			if (word.length <= width) {
-				current = word;
-			} else {
-				for (let i = 0; i < word.length; i += width) {
-					lines.push(word.slice(i, i + width));
-				}
-			}
-			continue;
-		}
-
-		const candidate = `${current} ${word}`;
-		if (candidate.length <= width) {
-			current = candidate;
-			continue;
-		}
-
-		lines.push(current);
-		if (word.length <= width) {
-			current = word;
-		} else {
-			current = "";
-			for (let i = 0; i < word.length; i += width) {
-				const chunk = word.slice(i, i + width);
-				if (chunk.length === width || i + width < word.length) lines.push(chunk);
-				else current = chunk;
-			}
-		}
-	}
-
-	if (current) lines.push(current);
-	return lines;
+	return wrapTextWithAnsi(normalized, Math.max(1, Math.floor(width)));
 }
 
 function padLine(prefix: string, content: string): string {
