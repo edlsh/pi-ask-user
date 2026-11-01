@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.17.2](https://github.com/edlsh/pi-ask-user/compare/v0.17.1...v0.17.2) (2026-11-01)
+
+
+### Bug Fixes
+
+* ignore top-level single-question fields in questions batches ([#88](https://github.com/edlsh/pi-ask-user/issues/88)) ([7e2cf4d](https://github.com/edlsh/pi-ask-user/commit/7e2cf4d0dbda649f75edc92c6433e37cc4592328))
+* wrap single-select text by display width ([#95](https://github.com/edlsh/pi-ask-user/issues/95)) ([d0a16b3](https://github.com/edlsh/pi-ask-user/commit/d0a16b3b3b6f22204a2781aec2c3a6e65d48e1d5))
+
 ## [0.17.1](https://github.com/edlsh/pi-ask-user/releases/tag/v0.17.1) - 2026-10-29
 
 ### Fixed
