@@ -1,5 +1,7 @@
 # pi-ask-user
 
+[![omp status](https://omppackages.com/badge/pi-ask-user.svg)](https://omppackages.com/packages/pi-ask-user)
+
 A Pi package that adds an interactive `ask_user` tool for collecting user decisions during an agent run.
 
 ## Demo
