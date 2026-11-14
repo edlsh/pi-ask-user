@@ -26,7 +26,7 @@ when intentionally updating development dependencies.
   runtime and documentation files.
 
 `bun run check` runs all of these. CI checks Node.js 22 and 24 with Pi 0.74.0
-(the supported minimum) and the pinned current host, 0.87.0. Runtime peer ranges
+(the supported minimum) and the pinned current host, 1.5.2. Runtime peer ranges
 remain unchanged. Updating the current development host also requires updating
 the CI matrix and checking the minimum host.
 
