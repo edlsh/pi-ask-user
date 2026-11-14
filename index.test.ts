@@ -17,6 +17,7 @@ let emittedEvents: Array<{ name: string; payload: any }> = [];
 
 let isolatedAgentDir: string;
 let originalAgentDir: string | undefined;
+let originalPreferences: Record<string, string> = {};
 
 function wrapPlainText(text: string, width = 80): string[] {
    const lines: string[] = [];
@@ -224,6 +225,14 @@ beforeAll(() => {
    isolatedAgentDir = mkdtempSync(join(tmpdir(), "ask-user-test-agent-dir-"));
    originalAgentDir = process.env.PI_CODING_AGENT_DIR;
    process.env.PI_CODING_AGENT_DIR = isolatedAgentDir;
+
+   // The developer's own PI_ASK_USER_* preferences must not change the defaults
+   // under test either. Tests that exercise one set it through stubEnv.
+   for (const key of Object.keys(process.env)) {
+      if (!key.startsWith("PI_ASK_USER_")) continue;
+      originalPreferences[key] = process.env[key]!;
+      delete process.env[key];
+   }
 });
 
 afterAll(() => {
@@ -233,6 +242,8 @@ afterAll(() => {
    } else {
       process.env.PI_CODING_AGENT_DIR = originalAgentDir;
    }
+   Object.assign(process.env, originalPreferences);
+   originalPreferences = {};
 });
 
 type RegisteredTool = {
