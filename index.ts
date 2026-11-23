@@ -517,15 +517,29 @@ function matchesSelectDown(data: string, keybindings: KeybindingsManager): boole
    );
 }
 
+/**
+ * Pi's native waiting-for-input status (OSC 7501), surfaced by terminals such as Herdr App and Kitty.
+ * Inline custom prompts honour it from Pi 1.5.0, overlays from Pi 1.5.1; older hosts ignore it.
+ */
+const ASK_BLOCKED_STATUS = { kind: "question", message: "Waiting for user response" } as const;
+
+interface AskCustomUIOptions {
+   overlay?: boolean;
+   overlayOptions?: OverlayOptions;
+   onHandle?: (handle: OverlayHandle) => void;
+   blocked: typeof ASK_BLOCKED_STATUS;
+}
+
 function buildCustomUIOptions(
    displayMode: AskDisplayMode,
    onHandle?: (handle: OverlayHandle) => void,
-): { overlay?: boolean; overlayOptions?: OverlayOptions; onHandle?: (handle: OverlayHandle) => void } | undefined {
+): AskCustomUIOptions {
    switch (displayMode) {
       case "inline":
-         return undefined;
+         return { blocked: ASK_BLOCKED_STATUS };
       case "overlay":
          return {
+            blocked: ASK_BLOCKED_STATUS,
             overlay: true,
             overlayOptions: {
                anchor: "center" as const,
@@ -540,6 +554,7 @@ function buildCustomUIOptions(
          const _exhaustive: never = displayMode;
          void _exhaustive;
          return {
+            blocked: ASK_BLOCKED_STATUS,
             overlay: true,
             overlayOptions: {
                anchor: "center" as const,
@@ -2668,7 +2683,7 @@ function resolvePromptSettings(params: AskParams): PromptSettings {
 
 /** Report the session as blocked on the user (`herdr:blocked`) for the duration of `run`. */
 async function whileBlocked<T>(pi: ExtensionAPI, run: () => Promise<T>): Promise<T> {
-   pi.events.emit("herdr:blocked", { active: true, label: "Waiting for user response" });
+   pi.events.emit("herdr:blocked", { active: true, label: ASK_BLOCKED_STATUS.message });
    try {
       return await run();
    } finally {

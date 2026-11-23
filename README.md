@@ -250,7 +250,7 @@ With [pi-tern](https://github.com/edlsh/pi-tern) in a [Tern](https://stencil.so)
 
 ### Events
 
-While an interactive prompt is open, the extension emits `herdr:blocked` with `{ active: true, label: "Waiting for user response" }`. It emits `{ active: false }` in `finally`, including cancellation and error paths. Hosts without a listener are unaffected.
+While an interactive prompt is open, the extension emits `herdr:blocked` with `{ active: true, label: "Waiting for user response" }`. It emits `{ active: false }` in `finally`, including cancellation and error paths. Hosts without a listener are unaffected. Custom prompts also pass Pi's native `blocked` descriptor (`{ kind: "question", message: "Waiting for user response" }`) for OSC 7501 program-status reporting (inline in Pi 1.5.0+, overlays in Pi 1.5.1+; ignored on older hosts).
 
 When a displayed prompt resolves with an answer or cancellation, it emits `ask:answered` or `ask:cancelled`. Calls aborted before a prompt opens emit neither outcome event. Every installed extension receives these, so by default they carry only what is needed to correlate the prompt with its outcome:
 
