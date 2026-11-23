@@ -81,6 +81,12 @@ class MockEditor {
    getText() {
       return editorText;
    }
+   getLines() {
+      return editorText.split("\n");
+   }
+   getCursor() {
+      return { line: 0, col: editorText.length };
+   }
    setText(text = "") {
       editorText = text;
    }
@@ -2891,6 +2897,190 @@ describe("ask_user", () => {
          comment: "Roll out both behind the same flag.",
       });
       expect(result.details.cancelled).toBe(false);
+   });
+
+   test("multi-select custom text preserves ticked options as a combined response", async () => {
+      stubEnv("PI_ASK_USER_EMIT_FULL_EVENTS", "false");
+      const tool = await setupTool();
+      let freeformRendered = "";
+      let ternFreeformLead: unknown;
+      const nativeSymbol = Symbol.for("pi-tern.component.v1");
+
+      const result = await tool.execute(
+         "tool-call-id",
+         {
+            question: "Toppings?",
+            options: ["Cheese", "Olives"],
+            allowMultiple: true,
+            allowFreeform: true,
+         },
+         undefined,
+         undefined,
+         {
+            hasUI: true,
+            ui: {
+               custom: async (factory: any) => {
+                  let resolved: any;
+                  const component = factory(
+                     { requestRender() { }, terminal: { rows: 24 } },
+                     createTheme(),
+                     createKeybindings(),
+                     (value: any) => {
+                        resolved = value;
+                     },
+                  );
+
+                  // Tick Cheese and Olives, then open "Type something."
+                  component.handleInput("1");
+                  component.handleInput("2");
+                  component.handleInput("down");
+                  component.handleInput("enter");
+
+                  freeformRendered = component.render(80).join("\n");
+                  const ternSheet = component[nativeSymbol]({
+                     requestRender() { },
+                     field() { },
+                     onEvent() { },
+                  });
+                  ternFreeformLead = ternSheet.c.find((child: any) => child.key === "lead")?.p?.spans;
+
+                  editorText = "extra basil";
+                  component.handleInput("enter");
+                  return resolved ?? null;
+               },
+            },
+         },
+      );
+
+      expect(freeformRendered).toContain("With selected:");
+      expect(freeformRendered).toContain("Cheese, Olives");
+      expect(ternFreeformLead).toEqual([{ t: "With selected: Cheese, Olives" }]);
+      expect(result.details.cancelled).toBe(false);
+      expect(result.details.response).toEqual({
+         kind: "combined",
+         selections: ["Cheese", "Olives"],
+         text: "extra basil",
+      });
+      expect(result.content[0]?.text).toBe('User answered: Cheese, Olives + "extra basil"');
+      expect(emittedEvents.find((entry) => entry.name === "ask:answered")?.payload).toEqual({
+         question: "Toppings?",
+         response: { kind: "combined" },
+      });
+
+      const expanded = tool.renderResult(result, { expanded: true, isPartial: false }, createTheme()).render(80).join("\n");
+      expect(expanded).toContain("● Cheese");
+      expect(expanded).toContain("● Olives");
+      expect(expanded).toContain("Custom: extra basil");
+
+      const ternTools = (globalThis as any)[Symbol.for("pi-tern.tools.v1")] as Map<string, (call: any) => any>;
+      const card = ternTools.get("ask_user")?.({
+         name: "ask_user",
+         args: { question: "Toppings?", options: ["Cheese", "Olives"], allowMultiple: true },
+         result,
+         status: "done",
+      });
+      const cardJson = JSON.stringify(card);
+      expect(cardJson).toContain("Cheese");
+      expect(cardJson).toContain("Olives");
+      expect(cardJson).toContain("“extra basil”");
+   });
+
+   test("multi-select custom text supports comment follow-up, Esc back, and blank text fallback", async () => {
+      const tool = await setupTool();
+
+      const combinedWithComment = await tool.execute(
+         "tool-call-id",
+         {
+            question: "Toppings?",
+            options: ["Cheese", "Olives"],
+            allowMultiple: true,
+            allowFreeform: true,
+            allowComment: true,
+         },
+         undefined,
+         undefined,
+         {
+            hasUI: true,
+            ui: {
+               custom: async (factory: any) => {
+                  let resolved: any;
+                  const component = factory(
+                     { requestRender() { }, terminal: { rows: 24 } },
+                     createTheme(),
+                     createKeybindings(),
+                     (value: any) => {
+                        resolved = value;
+                     },
+                  );
+
+                  // Tick Cheese, enter freeform, Esc back (ticks survive), enable comment, re-enter freeform.
+                  component.handleInput("1");
+                  component.handleInput("down");
+                  component.handleInput("down");
+                  component.handleInput("down");
+                  component.handleInput("enter");
+                  component.handleInput("escape");
+                  component.handleInput("ctrl+g");
+                  component.handleInput("enter");
+                  editorText = "extra basil";
+                  component.handleInput("enter");
+                  expect(resolved).toBeUndefined();
+                  editorText = "light sauce";
+                  component.handleInput("enter");
+                  return resolved ?? null;
+               },
+            },
+         },
+      );
+
+      expect(combinedWithComment.details.response).toEqual({
+         kind: "combined",
+         selections: ["Cheese"],
+         text: "extra basil",
+         comment: "light sauce",
+      });
+
+      const blankCustomText = await tool.execute(
+         "tool-call-id",
+         {
+            question: "Toppings?",
+            options: ["Cheese", "Olives"],
+            allowMultiple: true,
+            allowFreeform: true,
+         },
+         undefined,
+         undefined,
+         {
+            hasUI: true,
+            ui: {
+               custom: async (factory: any) => {
+                  let resolved: any;
+                  const component = factory(
+                     { requestRender() { }, terminal: { rows: 24 } },
+                     createTheme(),
+                     createKeybindings(),
+                     (value: any) => {
+                        resolved = value;
+                     },
+                  );
+
+                  component.handleInput("1");
+                  component.handleInput("down");
+                  component.handleInput("down");
+                  component.handleInput("enter");
+                  editorText = "   ";
+                  component.handleInput("enter");
+                  return resolved ?? null;
+               },
+            },
+         },
+      );
+
+      expect(blankCustomText.details.cancelled).toBe(false);
+      expect(blankCustomText.details.response).toEqual({
+         kind: "selection",
+         selections: ["Cheese"],
+      });
    });
 
 

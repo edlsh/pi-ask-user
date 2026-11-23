@@ -253,7 +253,10 @@ export interface AskCardDetails {
    readonly answers?: readonly ({ status: "answered"; response: AskCardResponse } | { status: "skipped" })[];
 }
 
-type AskCardResponse = { kind: "selection"; selections: readonly string[]; comment?: string } | { kind: "freeform"; text: string };
+type AskCardResponse =
+   | { kind: "selection"; selections: readonly string[]; comment?: string }
+   | { kind: "freeform"; text: string }
+   | { kind: "combined"; selections: readonly string[]; text: string; comment?: string };
 
 function firstLine(text: string): string {
    return text.split("\n").find((line) => line.trim() !== "")?.trim() ?? "";
@@ -262,15 +265,15 @@ function firstLine(text: string): string {
 /** One answered question: every option, a check on the chosen ones, then a custom answer or comment. */
 function answerRows(options: readonly { title: string }[], response: AskCardResponse | null | undefined, keyPrefix: string): TernNode[] {
    if (!response) return [n("text", { text: "Cancelled", tone: "warning" }, [], `${keyPrefix}cancelled`)];
-   const chosen = new Set(response.kind === "selection" ? response.selections : []);
+   const chosen = new Set(response.kind === "selection" || response.kind === "combined" ? response.selections : []);
    const row = (label: string, on: boolean, key: string): TernNode =>
       n("row", { gap: "sm", align: "baseline", role: on ? "omp.tool.answer" : "omp.tool.answer.off" }, [
          on ? n("icon", { name: "check", tone: "success" }) : null,
          n("text", { spans: [{ t: label, s: on ? "strong" : "muted" }], wrap: "word" }),
       ], key);
    const rows = options.map((option, index) => row(option.title, chosen.has(option.title), `${keyPrefix}o${index}`));
-   if (response.kind === "freeform") rows.push(row(`“${response.text}”`, true, `${keyPrefix}custom`));
-   if (response.kind === "selection" && response.comment) {
+   if (response.kind === "freeform" || response.kind === "combined") rows.push(row(`“${response.text}”`, true, `${keyPrefix}custom`));
+   if ((response.kind === "selection" || response.kind === "combined") && response.comment) {
       rows.push(n("text", { spans: [{ t: response.comment, s: "muted" }], wrap: "word", role: "omp.tool.context" }, [], `${keyPrefix}comment`));
    }
    return rows;

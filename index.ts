@@ -179,6 +179,12 @@ type AskResponse =
    | {
       kind: "freeform";
       text: string;
+   }
+   | {
+      kind: "combined";
+      selections: string[];
+      text: string;
+      comment?: string;
    };
 
 interface AskToolDetails {
@@ -291,11 +297,30 @@ function createSelectionResponse(selections: string[], comment?: string | null):
       : { kind: "selection", selections: normalizedSelections };
 }
 
+function createCombinedResponse(
+   selections: string[],
+   text: string | null | undefined,
+   comment?: string | null,
+): AskResponse | null {
+   const normalizedSelections = selections.map((selection) => selection.trim()).filter(Boolean);
+   const trimmedText = text?.trim();
+   const normalizedComment = normalizeOptionalComment(comment);
+
+   if (normalizedSelections.length > 0 && trimmedText) {
+      return normalizedComment
+         ? { kind: "combined", selections: normalizedSelections, text: trimmedText, comment: normalizedComment }
+         : { kind: "combined", selections: normalizedSelections, text: trimmedText };
+   }
+   if (normalizedSelections.length > 0) return createSelectionResponse(normalizedSelections, normalizedComment);
+   return createFreeformResponse(trimmedText);
+}
+
 function formatResponseSummary(response: AskResponse): string {
    if (response.kind === "freeform") return response.text;
 
    const selections = response.selections.join(", ");
-   return response.comment ? `${selections} — ${response.comment}` : selections;
+   const base = response.kind === "combined" ? `${selections} + "${response.text}"` : selections;
+   return response.comment ? `${base} — ${response.comment}` : base;
 }
 
 function buildCommentPrompt(prompt: string, selections: string[]): string {
@@ -315,8 +340,10 @@ function isCancelledInput(value: unknown): value is null | undefined {
    return value === null || value === undefined;
 }
 
-function isSelectionResponse(response: AskResponse): response is Extract<AskResponse, { kind: "selection" }> {
-   return response.kind === "selection";
+function hasOptionSelections(
+   response: AskResponse,
+): response is Extract<AskResponse, { kind: "selection" | "combined" }> {
+   return response.kind === "selection" || response.kind === "combined";
 }
 
 function createSelectListTheme(theme: Theme) {
@@ -1283,6 +1310,7 @@ class AskComponent extends Container {
 
    private mode: AskMode = "select";
    private pendingSelections: string[] = [];
+   private pendingCustomText: string | null = null;
    private freeformDraft = "";
    private commentDraft = "";
    private promptScrollOffset = 0;
@@ -1595,14 +1623,14 @@ class AskComponent extends Container {
    }
 
    private getMinimumModeRows(): number {
-      if (this.mode === "freeform") return 5;
-      if (this.mode === "comment") return 6;
+      if (this.mode === "freeform") return this.pendingSelections.length > 0 ? 6 : 5;
+      if (this.mode === "comment") return this.pendingCustomText ? 7 : 6;
       return 3;
    }
 
    private getPreferredModeRows(): number {
-      if (this.mode === "freeform") return 10;
-      if (this.mode === "comment") return 11;
+      if (this.mode === "freeform") return this.pendingSelections.length > 0 ? 11 : 10;
+      if (this.mode === "comment") return this.pendingCustomText ? 12 : 11;
       return 8;
    }
 
@@ -1641,12 +1669,18 @@ class AskComponent extends Container {
          return [
             ...new Text(this.theme.fg("accent", this.theme.bold(selectedLabel)), 1, 0).render(width),
             ...new Text(this.theme.fg("text", this.pendingSelections.join(", ")), 1, 0).render(width),
+            ...(this.pendingCustomText
+               ? new Text(`${this.theme.fg("dim", "Custom:")} ${this.theme.fg("text", this.pendingCustomText)}`, 1, 0).render(width)
+               : []),
             "",
          ];
       }
 
       return [
          ...new Text(this.theme.fg("accent", this.theme.bold("Custom response")), 1, 0).render(width),
+         ...(this.pendingSelections.length > 0
+            ? new Text(`${this.theme.fg("dim", "With selected:")} ${this.theme.fg("text", this.pendingSelections.join(", "))}`, 1, 0).render(width)
+            : []),
          "",
       ];
    }
@@ -1934,10 +1968,17 @@ class AskComponent extends Container {
                this.handleEditorSubmit(editor.getText());
             }
          });
+         const lead = this.mode === "comment"
+            ? this.pendingCustomText
+               ? `Selected: ${this.pendingSelections.join(", ")} · Custom: ${this.pendingCustomText}`
+               : `Selected: ${this.pendingSelections.join(", ")}`
+            : this.pendingSelections.length > 0
+               ? `With selected: ${this.pendingSelections.join(", ")}`
+               : undefined;
          return textSheet({
             question: this.question,
             context: this.context,
-            lead: this.mode === "comment" ? `Selected: ${this.pendingSelections.join(", ")}` : undefined,
+            lead,
             text: editor.getText(),
             cursor,
             placeholder: this.mode === "comment" ? "Add context for your selection" : "Type your answer",
@@ -2045,6 +2086,7 @@ class AskComponent extends Container {
    private handleSelectionSubmit(selections: string[], wantsComment: boolean): void {
       if (this.allowComment && wantsComment) {
          this.pendingSelections = selections;
+         this.pendingCustomText = null;
          this.commentDraft = "";
          this.showCommentMode();
          return;
@@ -2055,12 +2097,28 @@ class AskComponent extends Container {
 
    private handleEditorSubmit(text: string): void {
       if (this.mode === "freeform") {
+         if (this.pendingSelections.length > 0) {
+            const trimmed = text.trim();
+            const wantsComment = this.allowComment && (this.multiSelectList?.isCommentEnabled() ?? false);
+            if (wantsComment) {
+               this.pendingCustomText = trimmed || null;
+               this.commentDraft = "";
+               this.showCommentMode();
+               return;
+            }
+            this.onDone(createCombinedResponse(this.pendingSelections, text));
+            return;
+         }
          this.onDone(createFreeformResponse(text));
          return;
       }
 
       if (this.mode === "comment") {
          this.commentDraft = text;
+         if (this.pendingCustomText) {
+            this.onDone(createCombinedResponse(this.pendingSelections, this.pendingCustomText, text));
+            return;
+         }
          this.onDone(createSelectionResponse(this.pendingSelections, text));
       }
    }
@@ -2072,6 +2130,7 @@ class AskComponent extends Container {
 
       this.mode = "select";
       this.pendingSelections = [];
+      this.pendingCustomText = null;
       this.modeContainer.clear();
 
       if (this.allowMultiple) {
@@ -2091,6 +2150,8 @@ class AskComponent extends Container {
       }
 
       this.mode = "freeform";
+      this.pendingSelections = this.allowMultiple ? (this.multiSelectList?.getSelectedOptions() ?? []) : [];
+      this.pendingCustomText = null;
       this.modeContainer.clear();
 
       const editor = this.ensureEditor();
@@ -2098,6 +2159,11 @@ class AskComponent extends Container {
       (editor as any).focused = this._focused;
 
       this.modeContainer.addChild(new Text(this.theme.fg("accent", this.theme.bold("Custom response")), 1, 0));
+      if (this.pendingSelections.length > 0) {
+         this.modeContainer.addChild(
+            new Text(`${this.theme.fg("dim", "With selected:")} ${this.theme.fg("text", this.pendingSelections.join(", "))}`, 1, 0),
+         );
+      }
       this.modeContainer.addChild(new Spacer(1));
       this.modeContainer.addChild(editor);
 
@@ -2121,6 +2187,11 @@ class AskComponent extends Container {
       const selectedLabel = this.pendingSelections.length === 1 ? "Selected option:" : "Selected options:";
       this.modeContainer.addChild(new Text(this.theme.fg("accent", this.theme.bold(selectedLabel)), 1, 0));
       this.modeContainer.addChild(new Text(this.theme.fg("text", this.pendingSelections.join(", ")), 1, 0));
+      if (this.pendingCustomText) {
+         this.modeContainer.addChild(
+            new Text(`${this.theme.fg("dim", "Custom:")} ${this.theme.fg("text", this.pendingCustomText)}`, 1, 0),
+         );
+      }
       this.modeContainer.addChild(new Spacer(1));
       this.modeContainer.addChild(editor);
 
@@ -3023,11 +3094,11 @@ async function executeBatch(
    };
 }
 
-/** Expanded-result block: every option with the selected ones marked, then the comment. */
+/** Expanded-result block: every option with the selected ones marked, then any custom text or comment. */
 function formatOptionMarkers(
    theme: Theme,
    options: QuestionOption[],
-   response: Extract<AskResponse, { kind: "selection" }>,
+   response: Extract<AskResponse, { kind: "selection" | "combined" }>,
    indent = "",
 ): string {
    const selectedTitles = new Set(response.selections);
@@ -3036,6 +3107,9 @@ function formatOptionMarkers(
       const desc = opt.description ? ` — ${opt.description}` : "";
       const marker = selectedTitles.has(opt.title) ? theme.fg("success", "●") : theme.fg("dim", "○");
       text += `\n${indent}  ${marker} ${theme.fg("dim", opt.title)}${theme.fg("dim", desc)}`;
+   }
+   if (response.kind === "combined") {
+      text += `\n${indent}${theme.fg("dim", "Custom:")} ${theme.fg("dim", response.text)}`;
    }
    if (response.comment) {
       text += `\n${indent}${theme.fg("dim", "Comment:")} ${theme.fg("dim", response.comment)}`;
@@ -3064,7 +3138,7 @@ function formatBatchResult(theme: Theme, details: AskBatchDetails, expanded: boo
       if (subject.context) {
          text += `\n   ${theme.fg("dim", subject.context)}`;
       }
-      if (isSelectionResponse(response) && subject.options.length > 0) {
+      if (hasOptionSelections(response) && subject.options.length > 0) {
          text += formatOptionMarkers(theme, subject.options, response, "   ");
       }
    });
@@ -3406,7 +3480,7 @@ export default function(pi: ExtensionAPI) {
                text += "\n" + theme.fg("dim", details.context);
             }
 
-            if (isSelectionResponse(response) && details.options.length > 0) {
+            if (hasOptionSelections(response) && details.options.length > 0) {
                text += formatOptionMarkers(theme, details.options, response);
             }
          }
