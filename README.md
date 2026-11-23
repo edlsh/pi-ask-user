@@ -226,7 +226,8 @@ While an `ask_user` prompt is open:
 | `alt+o` (configurable via `overlayToggleKey`) | Hide/show the overlay popup so you can read the agent's prior output. Available in `overlay` mode only. The first time you hide it, a notification reminds you which key brings it back. |
 | `ctrl+g` (configurable via `commentToggleKey`) | Toggle the optional comment/extra-context row (when `allowComment: true`). |
 | `ctrl+e` | Expand or collapse oversized context while choosing an option. If another configured ask shortcut owns it, the prompt shows `ctrl+x` or `ctrl+y` instead. |
-| `enter` | Confirm the focused option, submit a freeform response, or submit/skip an optional comment. In a batch, confirming records the answer; on the review page it submits. |
+| `space` | Multi-select: tick/untick the focused option, toggle the comment row, or open the custom-response editor on "Type something." |
+| `enter` | Confirm the focused single-select option, submit ticked multi-select options (at least one must be ticked), submit a freeform response, or submit/skip an optional comment. In a batch, confirming records the answer; on the review page it submits. |
 | `esc` | Clear the search filter, exit freeform/comment mode, or cancel the prompt. In a batch, cancelling cancels every question. |
 | `↑` / `↓`, `ctrl+k` / `ctrl+j` | Navigate options. `ctrl+k` / `ctrl+j` (vim-style) work while typing in searchable prompts without disturbing the filter. On a batch's review page they scroll the answers. |
 | `tab` / `shift+tab` | Single question: move down/up through the options. Batch: switch to the next/previous question or the review page. |

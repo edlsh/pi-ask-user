@@ -586,6 +586,7 @@ class MultiSelectList implements Component {
    public onCancel?: () => void;
    public onSubmit?: (result: string[]) => void;
    public onEnterFreeform?: () => void;
+   public onStateChange?: () => void;
 
    constructor(
       options: QuestionOption[],
@@ -605,6 +606,23 @@ class MultiSelectList implements Component {
 
    public isCommentEnabled(): boolean {
       return this.commentEnabled;
+   }
+
+   public getSelectedOptions(): string[] {
+      return Array.from(this.checked)
+         .sort((a, b) => a - b)
+         .map((i) => this.options[i]?.title)
+         .filter((t): t is string => !!t);
+   }
+
+   public hasSelections(): boolean {
+      return this.checked.size > 0;
+   }
+
+   public getFocusedRowKind(): "option" | "comment" | "freeform" {
+      if (this.isCommentToggleRow(this.selectedIndex)) return "comment";
+      if (this.isFreeformRow(this.selectedIndex)) return "freeform";
+      return "option";
    }
 
    setMaxVisibleRows(rows: number): void {
@@ -673,12 +691,14 @@ class MultiSelectList implements Component {
       if (matchesSelectUp(data, this.keybindings)) {
          this.selectedIndex = this.selectedIndex === 0 ? count - 1 : this.selectedIndex - 1;
          this.invalidate();
+         this.onStateChange?.();
          return;
       }
 
       if (matchesSelectDown(data, this.keybindings)) {
          this.selectedIndex = this.selectedIndex === count - 1 ? 0 : this.selectedIndex + 1;
          this.invalidate();
+         this.onStateChange?.();
          return;
       }
 
@@ -689,6 +709,7 @@ class MultiSelectList implements Component {
             this.toggle(idx);
             this.selectedIndex = Math.min(idx, count - 1);
             this.invalidate();
+            this.onStateChange?.();
          }
          return;
       }
@@ -719,20 +740,14 @@ class MultiSelectList implements Component {
       }
       this.toggle(this.selectedIndex);
       this.invalidate();
+      this.onStateChange?.();
    }
 
-   /** Submit the ticked options, or the selected one when none is ticked. */
+   /** Submit the ticked options; does nothing when nothing is ticked. */
    submit(): void {
-      const selectedTitles = Array.from(this.checked)
-         .sort((a, b) => a - b)
-         .map((i) => this.options[i]?.title)
-         .filter((t): t is string => !!t);
-
-      const fallback = this.options[this.selectedIndex]?.title;
-      const result = selectedTitles.length > 0 ? selectedTitles : fallback ? [fallback] : [];
-
-      if (result.length > 0) this.onSubmit?.(result);
-      else this.onCancel?.();
+      const selectedTitles = this.getSelectedOptions();
+      if (selectedTitles.length === 0) return;
+      this.onSubmit?.(selectedTitles);
    }
 
    /** The rows as shown (options with their ticks, comment toggle, custom response), for Tern's native sheet. */
@@ -755,6 +770,7 @@ class MultiSelectList implements Component {
       this.selectedIndex = row;
       this.invalidate();
       if (activate) this.activate();
+      this.onStateChange?.();
    }
 
    render(width: number): string[] {
@@ -789,7 +805,9 @@ class MultiSelectList implements Component {
          }
 
          if (this.isFreeformRow(i)) {
-            const label = theme.fg("text", theme.bold("Type something."));
+            const label = isSelected
+               ? theme.fg("accent", theme.bold("Type something."))
+               : theme.fg("text", theme.bold("Type something."));
             const desc = theme.fg("muted", "Enter a custom response");
             const line = `${prefix}   ${label} ${theme.fg("dim", "—")} ${desc}`;
             block.push(truncateToWidth(line, width, ""));
@@ -1824,15 +1842,26 @@ class AskComponent extends Container {
       }
 
       if (this.allowMultiple) {
+         const focusedKind = this.multiSelectList?.getFocusedRowKind() ?? "option";
+         const hasSelections = this.multiSelectList?.hasSelections() ?? false;
+         const confirmKeys = formatKeyList(this.keybindings.getKeys("tui.select.confirm"));
+         const actionHint = focusedKind === "freeform"
+            ? literalHint(theme, `space/${confirmKeys}`, "custom response")
+            : focusedKind === "comment"
+               ? literalHint(theme, `space/${confirmKeys}`, "toggle context")
+               : literalHint(theme, "space", hasSelections ? "toggle" : "select");
+         const submitHint = focusedKind === "option" && hasSelections
+            ? keybindingHint(theme, this.keybindings, "tui.select.confirm", "submit")
+            : null;
          const hints = [
             this.navigationHint,
             literalHint(theme, "↑↓", "navigate"),
-            literalHint(theme, "space", "toggle"),
+            actionHint,
             commentHint,
             contextHint,
             promptScrollHint,
             overlayHint,
-            keybindingHint(theme, this.keybindings, "tui.select.confirm", "submit"),
+            submitHint,
             keybindingHint(theme, this.keybindings, "tui.select.cancel", "cancel"),
          ]
             .filter((hint): hint is string => !!hint)
@@ -1975,6 +2004,7 @@ class AskComponent extends Container {
       list.onCancel = () => this.onDone(null);
       list.onSubmit = (result) => this.handleSelectionSubmit(result, list.isCommentEnabled());
       list.onEnterFreeform = () => this.showFreeformMode();
+      list.onStateChange = () => this.updateHelpText();
 
       this.multiSelectList = list;
       return list;

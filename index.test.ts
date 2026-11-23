@@ -1498,6 +1498,131 @@ describe("ask_user", () => {
       expect(result.details.cancelled).toBe(false);
    });
 
+   test("multi-select ignores enter until an option is ticked and updates hints per focused row", async () => {
+      const tool = await setupTool();
+      let initialHelp = "";
+      let tickedHelp = "";
+      let commentHelp = "";
+      let freeformHelp = "";
+      let resolvedAfterEmptyEnter: unknown = "unset";
+
+      const result = await tool.execute(
+         "tool-call-id",
+         {
+            question: "Toppings?",
+            options: ["Cheese", "Olives"],
+            allowMultiple: true,
+            allowFreeform: true,
+            allowComment: true,
+         },
+         undefined,
+         undefined,
+         {
+            hasUI: true,
+            ui: {
+               custom: async (factory: any) => {
+                  let resolved: any;
+                  const component = factory(
+                     { requestRender() { }, terminal: { rows: 24 } },
+                     createTheme(),
+                     createKeybindings(),
+                     (value: any) => {
+                        resolved = value;
+                     },
+                  );
+
+                  initialHelp = component.render(120).join("\n");
+                  component.handleInput("down");
+                  component.handleInput("enter");
+                  resolvedAfterEmptyEnter = resolved;
+
+                  // Move to comment toggle row, then "Type something." row.
+                  component.handleInput("down");
+                  commentHelp = component.render(120).join("\n");
+                  component.handleInput("down");
+                  freeformHelp = component.render(120).join("\n");
+
+                  // Tick Cheese via number key and submit.
+                  component.handleInput("1");
+                  tickedHelp = component.render(120).join("\n");
+                  component.handleInput("enter");
+                  return resolved ?? null;
+               },
+            },
+         },
+      );
+
+      expect(resolvedAfterEmptyEnter).toBeUndefined();
+      expect(initialHelp).toContain("space select");
+      expect(initialHelp).not.toContain("enter submit");
+      expect(commentHelp).toContain("space/enter toggle context");
+      expect(commentHelp).not.toContain("enter submit");
+      expect(freeformHelp).toContain("space/enter custom response");
+      expect(freeformHelp).not.toContain("enter submit");
+      expect(tickedHelp).toContain("space toggle");
+      expect(tickedHelp).toContain("enter submit");
+      expect(result.details.cancelled).toBe(false);
+      expect(result.details.response).toEqual({ kind: "selection", selections: ["Cheese"] });
+   });
+
+   test("Tern Submit action with nothing ticked on a special multi-select row stays open instead of cancelling", async () => {
+      const tool = await setupTool();
+      const nativeSymbol = Symbol.for("pi-tern.component.v1");
+      let resolvedAfterSubmit: unknown = "unset";
+
+      const result = await tool.execute(
+         "tool-call-id",
+         {
+            question: "Toppings?",
+            options: ["Cheese", "Olives"],
+            allowMultiple: true,
+            allowFreeform: true,
+            allowComment: true,
+         },
+         undefined,
+         undefined,
+         {
+            hasUI: true,
+            ui: {
+               custom: async (factory: any) => {
+                  let resolved: any;
+                  const component = factory(
+                     { requestRender() { }, terminal: { rows: 24 } },
+                     createTheme(),
+                     createKeybindings(),
+                     (value: any) => {
+                        resolved = value;
+                     },
+                  );
+
+                  // Move focus to the comment row without ticking any option.
+                  component.handleInput("down");
+                  component.handleInput("down");
+                  let handler: ((event: any) => void) | undefined;
+                  component[nativeSymbol]({
+                     requestRender() { },
+                     field() { },
+                     onEvent(fn: (event: any) => void) {
+                        handler = fn;
+                     },
+                  });
+                  handler?.({ ev: "action", act: "submit" });
+                  resolvedAfterSubmit = resolved;
+
+                  // Now tick Cheese and submit.
+                  component.handleInput("1");
+                  component.handleInput("enter");
+                  return resolved ?? null;
+               },
+            },
+         },
+      );
+
+      expect(resolvedAfterSubmit).toBeUndefined();
+      expect(result.details.cancelled).toBe(false);
+      expect(result.details.response).toEqual({ kind: "selection", selections: ["Cheese"] });
+   });
+
    test("keeps single-select search usable when comment toggling is enabled", async () => {
       const tool = await setupTool();
 
