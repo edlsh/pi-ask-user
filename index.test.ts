@@ -2044,46 +2044,54 @@ describe("ask_user", () => {
       expect(rendered).toContain("The alpha option keeps the rollout conservative.");
    });
 
-   test.each([
-      { width: 40, rows: 12 },
-      { width: 60, rows: 20 },
-   ])("keeps the question, collapsed context, and a choice visible at $width x $rows", async ({ width, rows }) => {
+   test("collapses oversized context on small terminals (40x12) and opens it expanded when space allows (60x20)", async () => {
       const tool = await setupTool();
-      let rendered: string[] = [];
-
-      await tool.execute(
-         "tool-call-id",
-         {
-            question: "Which deployment strategy should we use?",
-            context: "Decision-critical context detail. ".repeat(80),
-            options: ["Alpha", "Beta"],
-         },
-         undefined,
-         undefined,
-         {
-            hasUI: true,
-            ui: {
-               custom: async (factory: any) => {
-                  const component = factory(
-                     { requestRender() { }, terminal: { rows } },
-                     createTheme(),
-                     createKeybindings(),
-                     () => { },
-                  );
-                  rendered = component.render(width);
-                  return null;
+      const renderAt = async (width: number, rows: number) => {
+         let rendered: string[] = [];
+         await tool.execute(
+            "tool-call-id",
+            {
+               question: "Which deployment strategy should we use?",
+               context: "Decision-critical context detail. ".repeat(80),
+               options: ["Alpha", "Beta"],
+            },
+            undefined,
+            undefined,
+            {
+               hasUI: true,
+               ui: {
+                  custom: async (factory: any) => {
+                     const component = factory(
+                        { requestRender() { }, terminal: { rows } },
+                        createTheme(),
+                        createKeybindings(),
+                        () => { },
+                     );
+                     rendered = component.render(width);
+                     return null;
+                  },
                },
             },
-         },
-      );
+         );
+         return rendered;
+      };
 
-      const joined = rendered.join("\n").replace(/\s+/g, " ");
-      expect(joined).toContain("Which deployment strategy should we");
-      expect(joined).toContain("use?");
-      expect(joined).toContain("→ 1. Alpha");
-      expect(joined).toContain("Context (");
-      expect(joined).toContain("ctrl+e");
-      expect(joined).not.toContain("Decision-critical context detail.");
+      const small = (await renderAt(40, 12)).join("\n").replace(/\s+/g, " ");
+      expect(small).toContain("Which deployment strategy should we");
+      expect(small).toContain("use?");
+      expect(small).toContain("→ 1. Alpha");
+      expect(small).toContain("Context (");
+      expect(small).toContain("ctrl+e");
+      expect(small).not.toContain("Decision-critical context detail.");
+
+      const mediumLines = await renderAt(60, 20);
+      const medium = mediumLines.join("\n").replace(/\s+/g, " ");
+      expect(mediumLines.length).toBeLessThanOrEqual(17);
+      expect(medium).toContain("Which deployment strategy should we use?");
+      expect(medium).toContain("Decision-critical context detail.");
+      expect(medium).toContain("→ 1. Alpha");
+      expect(medium).toContain("ctrl+e collapse context");
+      expect(medium).not.toContain("Context (");
    });
 
    test("expands and re-collapses long context without losing filtered selection", async () => {
@@ -2175,12 +2183,45 @@ describe("ask_user", () => {
          expect(frame).toContain("ctrl+e collapse context");
       });
 
-      test("uses PI_ASK_USER_CONTEXT_EXPANDED when the call omits contextExpanded", async () => {
+      test("PI_ASK_USER_CONTEXT_EXPANDED=false forces collapsed context even on tall terminals", async () => {
+         stubEnv("PI_ASK_USER_CONTEXT_EXPANDED", "false");
+         const tool = await setupTool();
+         const forcedCollapsed = await renderFirstFrame(tool, {});
+         expect(forcedCollapsed).toContain("Context (");
+         expect(forcedCollapsed).not.toContain("Context detail.");
+      });
+
+      test("PI_ASK_USER_CONTEXT_EXPANDED=true forces expanded context even on small terminals", async () => {
          stubEnv("PI_ASK_USER_CONTEXT_EXPANDED", "true");
          const tool = await setupTool();
-         const frame = await renderFirstFrame(tool, {});
-         expect(frame).toContain("Context detail.");
-         expect(frame).not.toContain("Context (");
+         let smallExpanded = "";
+         await tool.execute(
+            "tool-call-id",
+            {
+               question: "Which option should we use?",
+               context: "Context detail. ".repeat(80),
+               options: ["Alpha", "Beta"],
+            },
+            undefined,
+            undefined,
+            {
+               hasUI: true,
+               ui: {
+                  custom: async (factory: any) => {
+                     const component = factory(
+                        { requestRender() { }, terminal: { rows: 12 } },
+                        createTheme(),
+                        createKeybindings(),
+                        () => { },
+                     );
+                     smallExpanded = component.render(50).join("\n");
+                     return null;
+                  },
+               },
+            },
+         );
+         expect(smallExpanded).not.toContain("Context (");
+         expect(smallExpanded).toContain("ctrl+e collapse context");
       });
 
       test("per-call contextExpanded: false overrides PI_ASK_USER_CONTEXT_EXPANDED", async () => {
@@ -2189,6 +2230,56 @@ describe("ask_user", () => {
          const frame = await renderFirstFrame(tool, { contextExpanded: false });
          expect(frame).toContain("Context (");
          expect(frame).not.toContain("Context detail.");
+      });
+
+      test("automatic context expansion adapts to resize until manually toggled with ctrl+e", async () => {
+         const tool = await setupTool();
+         const terminal = { rows: 24 };
+         let tallInitial = "";
+         let shrunkAuto = "";
+         let grownAuto = "";
+         let manualCollapsed = "";
+         let afterResizeManual = "";
+
+         await tool.execute(
+            "tool-call-id",
+            {
+               question: "Which option should we use?",
+               context: "Context detail. ".repeat(80),
+               options: ["Alpha", "Beta"],
+            },
+            undefined,
+            undefined,
+            {
+               hasUI: true,
+               ui: {
+                  custom: async (factory: any) => {
+                     const component = factory(
+                        { requestRender() { }, terminal },
+                        createTheme(),
+                        createKeybindings(),
+                        () => { },
+                     );
+                     tallInitial = component.render(60).join("\n");
+                     terminal.rows = 12;
+                     shrunkAuto = component.render(60).join("\n");
+                     terminal.rows = 24;
+                     grownAuto = component.render(60).join("\n");
+                     component.handleInput("ctrl+e");
+                     manualCollapsed = component.render(60).join("\n");
+                     terminal.rows = 30;
+                     afterResizeManual = component.render(60).join("\n");
+                     return null;
+                  },
+               },
+            },
+         );
+
+         expect(tallInitial).toContain("Context detail.");
+         expect(shrunkAuto).toContain("Context (");
+         expect(grownAuto).toContain("Context detail.");
+         expect(manualCollapsed).toContain("Context (");
+         expect(afterResizeManual).toContain("Context (");
       });
    });
 
@@ -2455,11 +2546,12 @@ describe("ask_user", () => {
       expect(longOutput).not.toContain("Long context detail.");
    });
 
-   test("keeps medium inline context expanded until the user collapses it", async () => {
+   test("opens medium inline context expanded by default when space allows and keeps manual toggle state", async () => {
       const tool = await setupTool();
-      let firstExpanded = "";
-      let secondExpanded = "";
-      let collapsedAgain = "";
+      let initialExpanded = "";
+      let collapsedOnce = "";
+      let collapsedStill = "";
+      let reexpanded = "";
 
       await tool.execute(
          "tool-call-id",
@@ -2481,22 +2573,23 @@ describe("ask_user", () => {
                      createKeybindings(),
                      () => { },
                   );
-                  component.render(60);
+                  initialExpanded = component.render(60).join("\n");
                   component.handleInput("ctrl+e");
-                  firstExpanded = component.render(60).join("\n");
-                  secondExpanded = component.render(60).join("\n");
+                  collapsedOnce = component.render(60).join("\n");
+                  collapsedStill = component.render(60).join("\n");
                   component.handleInput("ctrl+e");
-                  collapsedAgain = component.render(60).join("\n");
+                  reexpanded = component.render(60).join("\n");
                   return null;
                },
             },
          },
       );
 
-      expect(firstExpanded).toContain("Medium context line 5");
-      expect(secondExpanded).toContain("Medium context line 5");
-      expect(collapsedAgain).toContain("Context (");
-      expect(collapsedAgain).not.toContain("Medium context line 5");
+      expect(initialExpanded).toContain("Medium context line 5");
+      expect(collapsedOnce).toContain("Context (");
+      expect(collapsedOnce).not.toContain("Medium context line 5");
+      expect(collapsedStill).toContain("Context (");
+      expect(reexpanded).toContain("Medium context line 5");
    });
 
    test("bounds and scrolls expanded context in inline mode", async () => {

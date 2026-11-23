@@ -264,6 +264,26 @@ function normalizeOptionalComment(text: string | null | undefined): string | und
    return trimmed ? trimmed : undefined;
 }
 
+const ANSI_ESCAPE_PATTERN = /\x1b(?:\][^\x07\x1b]*(?:\x07|\x1b\\)|\[[0-?]*[ -/]*[@-~]|[@-Z\\-_])/g;
+
+function hasVisibleContent(line: string): boolean {
+   return line.replace(ANSI_ESCAPE_PATTERN, "").trim().length > 0;
+}
+
+/**
+ * Minimum rows needed to show the Context: heading and at least one substantive
+ * line of context text (skipping blank lines between heading and content).
+ */
+function getMinExpandedContextRows(fullContextLines: string[]): number {
+   if (fullContextLines.length <= 1) return fullContextLines.length;
+   for (let index = 1; index < fullContextLines.length; index += 1) {
+      if (hasVisibleContent(fullContextLines[index] ?? "")) {
+         return index + 1;
+      }
+   }
+   return fullContextLines.length;
+}
+
 function parseBooleanPreference(value: string | undefined): boolean | undefined {
    if (value === undefined) return undefined;
    switch (value.trim().toLowerCase()) {
@@ -1301,7 +1321,7 @@ class AskComponent extends Container {
    private allowComment: boolean;
    private displayMode: AskDisplayMode;
    private singleSelectLayout: AskSingleSelectLayout;
-   private preferExpandedContext: boolean;
+   private preferExpandedContext: boolean | undefined;
    private tui: TUI;
    private theme: Theme;
    private keybindings: KeybindingsManager;
@@ -1318,6 +1338,7 @@ class AskComponent extends Container {
    private promptViewportRows = 0;
    private contextIsCollapsible = false;
    private contextExpanded = false;
+   private contextManuallyToggled = false;
    // A batch page shows its position in the frame title and a navigation hint.
    private frameTitle = "ask_user";
    private navigationHint: string | null = null;
@@ -1357,7 +1378,7 @@ class AskComponent extends Container {
       allowComment: boolean,
       displayMode: AskDisplayMode,
       singleSelectLayout: AskSingleSelectLayout,
-      contextExpanded: boolean,
+      contextExpanded: boolean | undefined,
       tui: TUI,
       theme: Theme,
       keybindings: KeybindingsManager,
@@ -1455,7 +1476,17 @@ class AskComponent extends Container {
 
    private renderInlineLayout(width: number, innerWidth: number): string[] {
       const fullContextLines = this.buildFullContextLines(innerWidth);
-      this.setContextIsCollapsible(fullContextLines.length > INLINE_CONTEXT_MAX_ROWS);
+      const isCollapsible = fullContextLines.length > INLINE_CONTEXT_MAX_ROWS;
+      const bodyCapacity = Math.max(0, this.getOverlayMaxRenderLines() - 2);
+      const questionLines = this.buildQuestionLines(innerWidth);
+      const helpFullLines = this.helpText.render(innerWidth);
+      const canFitExpanded = this.canFitExpandedContext(
+         questionLines.length,
+         fullContextLines,
+         bodyCapacity,
+         helpFullLines.length,
+      );
+      this.syncContextExpansion(isCollapsible, canFitExpanded);
       if (this.contextExpanded) {
          return this.renderOverlayLayout(width, innerWidth);
       }
@@ -1484,7 +1515,7 @@ class AskComponent extends Container {
       const questionLines = this.buildQuestionLines(innerWidth);
       const fullContextLines = this.buildFullContextLines(innerWidth);
       const shouldCollapse = this.displayMode === "inline"
-         ? this.contextIsCollapsible
+         ? fullContextLines.length > INLINE_CONTEXT_MAX_ROWS
          : this.mode === "select"
             ? this.shouldCollapseContextForOverlay(
                questionLines.length,
@@ -1493,7 +1524,13 @@ class AskComponent extends Container {
                helpFullLines.length,
             )
             : this.contextIsCollapsible;
-      this.setContextIsCollapsible(shouldCollapse);
+      const canFitExpanded = this.canFitExpandedContext(
+         questionLines.length,
+         fullContextLines,
+         bodyCapacity,
+         helpFullLines.length,
+      );
+      this.syncContextExpansion(shouldCollapse, canFitExpanded);
       helpFullLines = this.helpText.render(innerWidth);
       const promptLines = this.buildPromptLines(innerWidth, fullContextLines);
       const helpBudget = this.getOverlayHelpBudget(bodyCapacity, helpFullLines.length);
@@ -1516,7 +1553,11 @@ class AskComponent extends Container {
             modeBudget = Math.max(modeMinRows, modeBudget);
             promptBudget = promptAndModeRows - modeBudget;
 
-            const usefulPromptTarget = this.contextIsCollapsible && !this.contextExpanded ? 3 : 2;
+            const usefulPromptTarget = this.contextIsCollapsible && !this.contextExpanded
+               ? Math.max(3, questionLines.length + 1)
+               : this.contextExpanded && fullContextLines.length > 0
+                  ? questionLines.length + 1 + getMinExpandedContextRows(fullContextLines)
+                  : Math.max(2, questionLines.length);
             const usefulPromptRows = Math.min(
                promptLines.length,
                promptAndModeRows >= modeMinRows + usefulPromptTarget ? usefulPromptTarget : promptMinRows,
@@ -1563,14 +1604,27 @@ class AskComponent extends Container {
       return this.contextComponent.render(width);
    }
 
-   private setContextIsCollapsible(value: boolean): void {
-      if (this.contextIsCollapsible === value) return;
-      this.contextIsCollapsible = value;
-      // Whenever context becomes collapsible (first render, or a resize that
-      // shrinks the viewport) start in the user's preferred state; ctrl+e still
-      // toggles from there.
-      this.contextExpanded = value && this.preferExpandedContext;
-      this.updateHelpText();
+   private syncContextExpansion(isCollapsible: boolean, canFitExpanded: boolean): void {
+      const prevCollapsible = this.contextIsCollapsible;
+      const prevExpanded = this.contextExpanded;
+
+      if (!isCollapsible) {
+         this.contextIsCollapsible = false;
+         this.contextExpanded = false;
+         this.contextManuallyToggled = false;
+      } else if (!prevCollapsible) {
+         // First render or resize into collapsible territory: honor explicit
+         // preference when configured, otherwise expand when viewport has room.
+         this.contextIsCollapsible = true;
+         this.contextExpanded = this.preferExpandedContext ?? canFitExpanded;
+      } else if (!this.contextManuallyToggled && this.preferExpandedContext === undefined) {
+         // Follow viewport capacity across resizes until the user toggles manually.
+         this.contextExpanded = canFitExpanded;
+      }
+
+      if (this.contextIsCollapsible !== prevCollapsible || this.contextExpanded !== prevExpanded) {
+         this.updateHelpText();
+      }
    }
 
    private getContextToggleKey(): string {
@@ -1599,6 +1653,16 @@ class AskComponent extends Container {
       ];
    }
 
+   private getPromptCapacity(bodyCapacity: number, helpRows: number): number {
+      const helpBudget = this.getOverlayHelpBudget(bodyCapacity, helpRows);
+      const contentRows = Math.max(0, bodyCapacity - helpBudget);
+      const separatorRows = contentRows >= 4 ? 1 : 0;
+      return Math.max(
+         0,
+         contentRows - separatorRows - this.getMinimumModeRows(),
+      );
+   }
+
    private shouldCollapseContextForOverlay(
       questionRows: number,
       contextRows: number,
@@ -1606,14 +1670,18 @@ class AskComponent extends Container {
       helpRows: number,
    ): boolean {
       if (contextRows === 0) return false;
-      const helpBudget = this.getOverlayHelpBudget(bodyCapacity, helpRows);
-      const contentRows = Math.max(0, bodyCapacity - helpBudget);
-      const separatorRows = contentRows >= 4 ? 1 : 0;
-      const promptCapacity = Math.max(
-         0,
-         contentRows - separatorRows - this.getMinimumModeRows(),
-      );
-      return questionRows + 1 + contextRows > promptCapacity;
+      return questionRows + 1 + contextRows > this.getPromptCapacity(bodyCapacity, helpRows);
+   }
+
+   private canFitExpandedContext(
+      questionRows: number,
+      fullContextLines: string[],
+      bodyCapacity: number,
+      helpRows: number,
+   ): boolean {
+      if (fullContextLines.length === 0) return false;
+      const minExpandedPromptRows = questionRows + 1 + getMinExpandedContextRows(fullContextLines);
+      return this.getPromptCapacity(bodyCapacity, helpRows) >= minExpandedPromptRows;
    }
 
    private getOverlayHelpBudget(bodyCapacity: number, renderedHelpRows: number): number {
@@ -2203,7 +2271,9 @@ class AskComponent extends Container {
    private toggleContext(): boolean {
       if (this.mode !== "select" || !this.contextIsCollapsible) return false;
       this.contextExpanded = !this.contextExpanded;
+      this.contextManuallyToggled = true;
       this.promptScrollOffset = 0;
+      this.updateHelpText();
       this.invalidate();
       this.tui.requestRender();
       return true;
@@ -2739,7 +2809,7 @@ interface PromptSettings {
    displayMode: AskDisplayMode;
    singleSelectLayout: AskSingleSelectLayout;
    allowComment: boolean;
-   contextExpanded: boolean;
+   contextExpanded: boolean | undefined;
    shortcuts: ResolvedAskShortcuts;
 }
 
@@ -2763,8 +2833,7 @@ function resolvePromptSettings(params: AskParams): PromptSettings {
          ?? false,
       contextExpanded: params.contextExpanded
          ?? parseBooleanPreference(process.env.PI_ASK_USER_CONTEXT_EXPANDED)
-         ?? settings.contextExpanded
-         ?? false,
+         ?? settings.contextExpanded,
       shortcuts: {
          overlayToggle: resolveShortcut(
             params.overlayToggleKey,
@@ -3238,7 +3307,7 @@ export default function(pi: ExtensionAPI) {
          ),
          contextExpanded: Type.Optional(
             Type.Boolean({
-               description: "Start with oversized context expanded instead of collapsed behind a one-line summary. Default: PI_ASK_USER_CONTEXT_EXPANDED env var or contextExpanded in ~/.pi/agent/ask-user.json (respecting PI_CODING_AGENT_DIR) if set, otherwise false.",
+               description: "Override whether oversized context starts expanded or collapsed behind a one-line summary. Default: PI_ASK_USER_CONTEXT_EXPANDED env var or contextExpanded in ~/.pi/agent/ask-user.json (respecting PI_CODING_AGENT_DIR) if set, otherwise automatic (expanded when screen space fits the question, context, and choices; collapsed on smaller terminals).",
             }),
          ),
          overlayToggleKey: Type.Optional(
