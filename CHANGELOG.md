@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.18.0](https://github.com/edlsh/pi-ask-user/compare/v0.17.2...v0.18.0) (2026-11-23)
+
+
+### Features
+
+* preserve ticked multi-select options alongside custom text ([#106](https://github.com/edlsh/pi-ask-user/issues/106)) ([cfaef7b](https://github.com/edlsh/pi-ask-user/commit/cfaef7b7d4bc8ee761b35f3023a97afa6e70396a))
+* show decision context expanded by default when space allows ([#59](https://github.com/edlsh/pi-ask-user/issues/59)) ([a947a60](https://github.com/edlsh/pi-ask-user/commit/a947a606ff3e83c7eeff2a7c60257566e7efbd4d))
+
+
+### Bug Fixes
+
+* report native Pi blocked status while waiting for input ([#100](https://github.com/edlsh/pi-ask-user/issues/100)) ([432e720](https://github.com/edlsh/pi-ask-user/commit/432e720fe4ed85c016b688b6812c1ea0da225e56))
+* require a selection to submit multi-select and update row hints ([#104](https://github.com/edlsh/pi-ask-user/issues/104), [#105](https://github.com/edlsh/pi-ask-user/issues/105)) ([860f1b3](https://github.com/edlsh/pi-ask-user/commit/860f1b35df4d759be6145ec164700483c8b3f0df))
+
 ## [0.17.2](https://github.com/edlsh/pi-ask-user/compare/v0.17.1...v0.17.2) (2026-11-01)
 
 
