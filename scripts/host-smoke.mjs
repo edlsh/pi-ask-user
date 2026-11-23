@@ -251,4 +251,44 @@ for (const displayMode of ["inline", "overlay"]) {
       { status: "answered", response: { kind: "selection", selections: ["Gamma"] } },
    ]);
 }
+// Real Markdown context expansion: opens expanded on normal terminals with real evidence visible,
+// and collapses only when screen space requires it (#59).
+const longMarkdownContext = Array.from({ length: 14 }, (_, i) => `- Evidence item ${i}: concrete tradeoff detail.`).join("\n");
+for (const { displayMode, width, rows, expectExpanded } of [
+   { displayMode: "overlay", width: 60, rows: 20, expectExpanded: true },
+   { displayMode: "inline", width: 60, rows: 20, expectExpanded: true },
+   { displayMode: "overlay", width: 40, rows: 12, expectExpanded: false },
+]) {
+   await tool.execute("smoke-context-default", {
+      question: "Which approach should we take?",
+      context: longMarkdownContext,
+      options: [{ title: "Alpha" }, { title: "Beta" }],
+      allowFreeform: false,
+      allowComment: false,
+      displayMode,
+   }, undefined, undefined, {
+      hasUI: true,
+      ui: {
+         custom: async (factory) => {
+            const component = factory(
+               { requestRender() {}, terminal: { rows } },
+               theme, getKeybindings(), () => {},
+            );
+            const lines = component.render(width);
+            const text = lines.join("\n");
+            assert.ok(text.includes("Alpha"), `${displayMode} ${width}x${rows} must keep a choice visible`);
+            for (const line of lines) {
+               assert.ok(visibleWidth(line) <= width, `${displayMode} ${width}x${rows} exceeds ${width} columns`);
+            }
+            if (expectExpanded) {
+               assert.ok(text.includes("Evidence item 0"), `${displayMode} ${width}x${rows} must show context evidence on frame 1`);
+               assert.ok(!text.includes("Context ("), `${displayMode} ${width}x${rows} should open expanded`);
+            } else {
+               assert.ok(text.includes("Context ("), `${displayMode} ${width}x${rows} should collapse when cramped`);
+            }
+            return null;
+         },
+      },
+   });
+}
 console.log("Host smoke passed: registration, schema, batch schema validation, RPC select, redacted event, thrown errors, error rendering, native TUI, batch TUI.");

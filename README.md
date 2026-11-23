@@ -71,7 +71,7 @@ The registered tool name is:
 | `allowComment` | `boolean?` | env var, settings file, or `false` | Expose a user-toggleable extra-context option in the custom UI (`ctrl+g` or the toggle row) and collect an optional comment in fallback dialogs |
 | `displayMode` | `"overlay" \| "inline"?` | env var, settings file, or `"overlay"` | Controls custom UI rendering: `overlay` shows the centered modal (current behavior), `inline` renders without overlay framing |
 | `singleSelectLayout` | `"auto" \| "list"?` | env var, settings file, or `"auto"` | Use the responsive details pane automatically or always render descriptions below their options |
-| `contextExpanded` | `boolean?` | env var, settings file, or `false` | Start with oversized context expanded. Per-call value overrides `PI_ASK_USER_CONTEXT_EXPANDED` |
+| `contextExpanded` | `boolean?` | env var, settings file, or automatic | Override initial expansion of oversized context. By default, context starts expanded whenever the terminal has room for the question, context, and choices, and collapses only on smaller terminals |
 | `overlayToggleKey` | `string?` | env var, settings file, or `"alt+o"` | Shortcut for hiding/showing the overlay popup (overlay mode only). Pi-TUI key spec, e.g. `"alt+o"`, `"ctrl+shift+h"`. Pass `"off"` to disable. |
 | `commentToggleKey` | `string?` | env var, settings file, or `"ctrl+g"` | Shortcut for toggling the optional comment/extra-context row when `allowComment: true`. Pass `"off"` to disable. |
 | `timeout` | `number?` | — | Auto-dismiss after N ms and return `null` if the prompt times out |
@@ -197,14 +197,14 @@ Effective order:
 
 ### Context expansion
 
-Oversized context collapses behind a one-line summary so the question and choices stay visible. To start expanded instead:
+Decision context is shown expanded by default whenever the terminal has room for the question, at least one line of context, and a usable choice list (scrolling inside a bounded viewport when long). It collapses behind a one-line summary only on smaller terminals. To override the automatic default:
 
 1. Per-call `contextExpanded` parameter (if provided)
 2. `PI_ASK_USER_CONTEXT_EXPANDED` (`true`, `1`, `yes`, or `on`; corresponding false values are also accepted)
 3. `contextExpanded` in `ask-user.json`
-4. Fallback default: `false`
+4. Fallback default: automatic based on terminal height
 
-`ctrl+e` still toggles from whichever state the prompt opened in.
+`ctrl+e` still toggles from whichever state the prompt opened in, and preserves your manual choice across terminal resizes.
 
 ### Shortcuts
 
@@ -243,7 +243,7 @@ The custom UI uses one timeout for the prompt. In the dialog fallback, the confi
 
 ### Mobile-sized terminals
 
-If context wraps beyond the available decision area, `ask_user` collapses it into a one-line summary so the question and at least one choice remain visible. Press the context key shown in the prompt (`ctrl+e` by default) to expand or collapse the complete context; expanded context remains bounded and scrollable with the existing prompt-scroll keys in both display modes.
+When the terminal is too small to show the question, context evidence, and choices together, `ask_user` collapses oversized context into a one-line summary so the question and choices remain visible. On taller terminals, oversized context opens expanded in a bounded, scrollable viewport. Press the context key shown in the prompt (`ctrl+e` by default) to expand or collapse at any time in both display modes.
 
 ### Tern
 
