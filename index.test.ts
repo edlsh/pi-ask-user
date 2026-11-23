@@ -505,6 +505,7 @@ describe("ask_user", () => {
 
       expect(capturedOptions.overlay).toBe(true);
       expect(capturedOptions.overlayOptions.visible).toBeUndefined();
+      expect(capturedOptions.blocked).toEqual({ kind: "question", message: "Waiting for user response" });
    });
 
    test("uses non-overlay custom UI when displayMode is inline", async () => {
@@ -531,8 +532,43 @@ describe("ask_user", () => {
          },
       );
 
-      expect(capturedOptions).toBeUndefined();
+      expect(capturedOptions).toEqual({ blocked: { kind: "question", message: "Waiting for user response" } });
       expect(result.details.cancelled).toBe(true);
+   });
+
+   test("batch prompts pass the native blocked descriptor in overlay and inline modes", async () => {
+      const tool = await setupTool();
+      const expectedBlocked = { kind: "question", message: "Waiting for user response" };
+      for (const displayMode of ["overlay", "inline"] as const) {
+         let capturedOptions: any;
+         await tool.execute(
+            "tool-call-id",
+            {
+               questions: [
+                  { question: "First?", options: ["A"] },
+                  { question: "Second?", options: ["B"] },
+               ],
+               displayMode,
+            },
+            undefined,
+            undefined,
+            {
+               hasUI: true,
+               ui: {
+                  custom: async (_factory: any, options: any) => {
+                     capturedOptions = options;
+                     return null;
+                  },
+               },
+            },
+         );
+         expect(capturedOptions?.blocked).toEqual(expectedBlocked);
+         if (displayMode === "inline") {
+            expect(capturedOptions?.overlay).toBeUndefined();
+         } else {
+            expect(capturedOptions?.overlay).toBe(true);
+         }
+      }
    });
 
    test("inline mode resolves with the user's selection", async () => {
@@ -625,7 +661,7 @@ describe("ask_user", () => {
          },
       );
 
-      expect(capturedOptions).toBeUndefined();
+      expect(capturedOptions).toEqual({ blocked: { kind: "question", message: "Waiting for user response" } });
    });
 
    test("normalizes PI_ASK_USER_DISPLAY_MODE before applying it", async () => {
@@ -649,7 +685,7 @@ describe("ask_user", () => {
          },
       );
 
-      expect(capturedOptions).toBeUndefined();
+      expect(capturedOptions).toEqual({ blocked: { kind: "question", message: "Waiting for user response" } });
    });
 
    test("call-level displayMode overrides PI_ASK_USER_DISPLAY_MODE env var", async () => {
@@ -3989,14 +4025,14 @@ test("top-level single-question fields sent with questions are ignored (#88)", a
       test("uses ask-user.json displayMode when the env var and call-level value are unset", async () => {
          stubSettingsFile(JSON.stringify({ displayMode: "inline" }));
          const capturedOptions = await executeWithCapturedOptions({});
-         expect(capturedOptions).toBeUndefined();
+         expect(capturedOptions).toEqual({ blocked: { kind: "question", message: "Waiting for user response" } });
       });
 
       test("PI_ASK_USER_DISPLAY_MODE env var overrides ask-user.json", async () => {
          stubSettingsFile(JSON.stringify({ displayMode: "overlay" }));
          stubEnv("PI_ASK_USER_DISPLAY_MODE", "inline");
          const capturedOptions = await executeWithCapturedOptions({});
-         expect(capturedOptions).toBeUndefined();
+         expect(capturedOptions).toEqual({ blocked: { kind: "question", message: "Waiting for user response" } });
       });
 
       test("call-level displayMode overrides ask-user.json", async () => {
